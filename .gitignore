@@ -1,4 +1,27 @@
+# Python
 .venv
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Environment
 .env
+.env.local
+
+# IDE
+.vscode
+.idea/
+*.swp
+*.swo
+
+# Model files (auto-downloaded by ultralytics)
+*.pt
+yolo*.pt
+runs/
+
+# OS
+.DS_Store
+Thumbs.db
