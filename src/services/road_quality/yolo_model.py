@@ -109,3 +109,4 @@ class YOLOv8RoadModel(RoadQualityModel):
             'classes': list(self.class_names.values()),
             'is_loaded': self.is_loaded
         }
+    

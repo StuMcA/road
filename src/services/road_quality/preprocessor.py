@@ -62,3 +62,4 @@ class ImagePreprocessor:
         enhanced = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2RGB)
         
         return enhanced
+    
