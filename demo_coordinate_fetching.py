@@ -94,7 +94,7 @@ def demo_coordinate_analysis():
         print("   and set it as: export MAPILLARY_ACCESS_TOKEN=your_token_here")
         return
     
-    print("🏴󠁧󠁢󠁳󠁣󠁴󠁿 Edinburgh Road Quality Analysis Demo")
+    print("Edinburgh Road Quality Analysis Demo")
     print("=" * 50)
     
     # Create output directory
