@@ -78,7 +78,7 @@ class RoadSegmentation:
                         # If no vehicles detected, assume bottom 40% is road
                         road_percentage = 40.0
             
-            has_sufficient_road = road_percentage >= 25.0  # At least 25% road surface
+            has_sufficient_road = road_percentage >= 10.0  # At least 10% road surface
             return road_percentage, has_sufficient_road
             
         except Exception:
