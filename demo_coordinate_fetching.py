@@ -64,21 +64,18 @@ def serialize_pipeline_result(pipeline_result):
         road_metrics = pipeline_result.road_metrics
         result_dict["road_metrics"] = {
             "overall_quality_score": road_metrics.overall_quality_score,
-            "crack_score": road_metrics.crack_score,
-            "pothole_score": road_metrics.pothole_score,
+            "crack_confidence": road_metrics.crack_confidence,
+            "crack_severity": road_metrics.crack_severity,
+            "pothole_confidence": road_metrics.pothole_confidence,
+            "pothole_count": road_metrics.pothole_count,
+            "surface_roughness": road_metrics.surface_roughness,
+            "lane_marking_visibility": road_metrics.lane_marking_visibility,
             "debris_score": road_metrics.debris_score,
-            "lane_marking_score": road_metrics.lane_marking_score,
-            "processing_time_ms": road_metrics.processing_time_ms,
+            "weather_condition": road_metrics.weather_condition,
+            "assessment_confidence": road_metrics.assessment_confidence,
             "timestamp": road_metrics.timestamp,
-            "model_version": road_metrics.model_version,
-            "detections": [
-                {
-                    "class_name": det.class_name,
-                    "confidence": det.confidence,
-                    "bbox": det.bbox,
-                    "area": det.area
-                } for det in road_metrics.detections
-            ] if road_metrics.detections else []
+            "model_name": road_metrics.model_name,
+            "model_version": road_metrics.model_version
         }
     
     return result_dict
@@ -171,14 +168,14 @@ def demo_coordinate_analysis():
         print(f"\n📍 Location {i}/5: {location['name']}")
         print(f"   {location['description']}")
         print(f"   Coordinates: {location['lat']:.4f}, {location['lon']:.4f}")
-        print(f"   Search radius: 2m")
+        print(f"   Search radius: 5m")
         
         try:
             # Fetch and analyze images at this location
             result = pipeline.process_coordinate(
                 lat=location['lat'],
                 lon=location['lon'],
-                radius_m=2,  # Constant 2m radius for all locations
+                radius_m=5,  # Constant 2m radius for all locations
                 limit=5,  # Get up to 5 images per location
                 output_dir=str(location_dir)
             )
