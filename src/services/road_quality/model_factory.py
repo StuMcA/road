@@ -20,4 +20,3 @@ class ModelFactory:
             YOLOv8RoadModel instance
         """
         return YOLOv8RoadModel(model_path)
-    

@@ -97,4 +97,3 @@ class RoadQualityMetrics:
             model_name=model_info.get('model_type', 'unknown'),
             model_version=model_info.get('version', 'unknown')
         )
-    

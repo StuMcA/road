@@ -75,4 +75,3 @@ class RoadQualityService:
                 'target_size': self.preprocessor.target_size
             }
         }
-    

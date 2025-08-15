@@ -21,4 +21,3 @@ class RoadQualityModel:
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the loaded model"""
         raise NotImplementedError("Subclasses must implement get_model_info")
-    

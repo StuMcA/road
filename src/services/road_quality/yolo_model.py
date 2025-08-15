@@ -36,12 +36,10 @@ class YOLOv8RoadModel(RoadQualityModel):
             
             self.is_loaded = True
             return True
-        except ImportError:
-            print("ultralytics not installed. Run: pip install ultralytics")
-            return False
+        except ImportError as e:
+            raise ImportError("ultralytics package required. Install with: pip install ultralytics") from e
         except Exception as e:
-            print(f"Failed to load YOLOv8 model: {e}")
-            return False
+            raise RuntimeError(f"Failed to load YOLOv8 model: {e}") from e
     
     def predict(self, image_batch: np.ndarray) -> Dict[str, Any]:
         """Run inference on image batch"""
@@ -88,9 +86,9 @@ class YOLOv8RoadModel(RoadQualityModel):
             'pothole_count': len(pothole_detections),
             'debris_score': max(debris_detections) if debris_detections else 0.0,
             'surface_roughness': self._estimate_roughness(crack_detections + pothole_detections),
-            'lane_visibility': 0.7,  # Would need separate detection
-            'weather_condition': 'unknown',
-            'confidence': 0.8
+            'lane_visibility': self._estimate_lane_visibility(boxes),
+            'weather_condition': self._detect_weather_condition(boxes),
+            'confidence': self._calculate_overall_confidence(boxes)
         }
     
     def _estimate_roughness(self, defect_scores) -> float:
@@ -98,6 +96,47 @@ class YOLOv8RoadModel(RoadQualityModel):
         if not defect_scores:
             return 0.1
         return min(0.9, sum(defect_scores) / len(defect_scores))
+    
+    def _estimate_lane_visibility(self, boxes) -> float:
+        """Estimate lane marking visibility from YOLO detections"""
+        if boxes is None:
+            return 0.5
+        
+        lane_detections = []
+        for box in boxes:
+            class_id = int(box.cls[0])
+            confidence = float(box.conf[0])
+            if class_id == 3:  # lane_marking
+                lane_detections.append(confidence)
+        
+        if not lane_detections:
+            return 0.5  # Default when no lane markings detected
+        
+        return max(lane_detections)
+    
+    def _detect_weather_condition(self, boxes) -> str:
+        """Detect weather condition from image characteristics"""
+        # This would require more sophisticated image analysis
+        # For now, return unknown as it requires additional ML models
+        # boxes parameter reserved for future weather detection implementation
+        _ = boxes  # Acknowledge unused parameter
+        return 'unknown'
+    
+    def _calculate_overall_confidence(self, boxes) -> float:
+        """Calculate overall detection confidence"""
+        if boxes is None:
+            return 0.5
+        
+        confidences = []
+        for box in boxes:
+            confidence = float(box.conf[0])
+            confidences.append(confidence)
+        
+        if not confidences:
+            return 0.5
+        
+        # Return average confidence of all detections
+        return sum(confidences) / len(confidences)
     
     def get_model_info(self) -> Dict[str, Any]:
         """Get model information"""
@@ -109,4 +148,3 @@ class YOLOv8RoadModel(RoadQualityModel):
             'classes': list(self.class_names.values()),
             'is_loaded': self.is_loaded
         }
-    

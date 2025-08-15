@@ -32,8 +32,3 @@ def bbox_from_point(lat, lon, half_side_m):
 
     return min_lat, min_lon, max_lat, max_lon
 
-
-# Example usage:
-lat, lon = 51.5007, -0.1246  # London
-bbox = bbox_from_point(lat, lon, 1)  # 1 metre in all directions
-print(bbox)  # (min_lat, min_lon, max_lat, max_lon)
