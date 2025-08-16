@@ -1,4 +1,5 @@
-from .road_quality_service import RoadQualityService
 from .metrics import RoadQualityMetrics
+from .road_quality_service import RoadQualityService
 
-__all__ = ['RoadQualityService', 'RoadQualityMetrics']
+
+__all__ = ["RoadQualityService", "RoadQualityMetrics"]
