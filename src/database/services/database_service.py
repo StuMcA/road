@@ -154,6 +154,7 @@ class DatabaseService:
         date_taken: datetime = None,
         compass_angle: float = None,
         street_point_id: int = None,
+        street_data_id: int = None,
     ) -> int:
         """
         Save photo metadata to database.
@@ -165,6 +166,7 @@ class DatabaseService:
             date_taken: When photo was captured
             compass_angle: Camera direction in degrees (0-360)
             street_point_id: Reference to street point (nullable in Phase 1)
+            street_data_id: Reference to street data entry (TOID-based)
 
         Returns:
             Photo ID
@@ -181,14 +183,14 @@ class DatabaseService:
             cursor.execute(
                 f"""
                 INSERT INTO photos (
-                    street_point_id, source, source_image_id,
+                    street_point_id, street_data_id, source, source_image_id,
                     location, date_taken, compass_angle
                 ) VALUES (
-                    %s, %s, %s,
+                    %s, %s, %s, %s,
                     {location_sql if location_sql else "NULL"}, %s, %s
                 ) RETURNING id
             """,
-                (street_point_id, source, source_image_id, date_taken, compass_angle),
+                (street_point_id, street_data_id, source, source_image_id, date_taken, compass_angle),
             )
 
             result = cursor.fetchone()

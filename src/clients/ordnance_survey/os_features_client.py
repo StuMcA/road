@@ -11,13 +11,6 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-NAMESPACES = {
-    "osfeatures": "http://www.ordnancesurvey.co.uk/osfeatures/1.0",
-    "gml": "http://www.opengis.net/gml",
-    "wfs": "http://www.opengis.net/wfs",
-}
-
-
 class OSFeaturesClient:
     """Client for accessing Ordnance Survey Features API.
     
