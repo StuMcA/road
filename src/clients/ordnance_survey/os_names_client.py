@@ -330,3 +330,4 @@ class OSNamesClient:
             "rate_limit_delay": self.RATE_LIMIT_DELAY,
             "api_key_configured": bool(self.api_key)
         }
+    
