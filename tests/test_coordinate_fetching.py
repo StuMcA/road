@@ -15,8 +15,8 @@ from unittest.mock import Mock, patch
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from src.services.image_fetcher import ImageFetcherService
-from src.services.mapillary_client import MapillaryClient
+from src.services.image.fetcher_service import ImageFetcherService
+from src.clients.mapillary.mapillary_client import MapillaryClient
 from src.services.pipeline.road_analysis_pipeline import RoadAnalysisPipeline
 from src.utils.coord_utils import bbox_from_point
 

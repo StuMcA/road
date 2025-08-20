@@ -264,6 +264,61 @@ COMMENT ON TABLE road_analysis_results IS 'Road condition analysis results (only
 COMMENT ON TABLE road_analysis_groups IS 'Group-level road analysis combining multiple quality-passed photos (Phase 2 functionality)';
 COMMENT ON TABLE group_analysis_photos IS 'Links quality-passed photos to group analyses (Phase 2 functionality)';
 
+-- USRN table for OS Features USRN data  
+CREATE TABLE usrn (
+    id SERIAL PRIMARY KEY,
+    usrn VARCHAR(20) UNIQUE NOT NULL,
+    version_date DATE,
+    source_product VARCHAR(100),
+    geom GEOMETRY(GEOMETRY, 4326), -- LineString or Point geometry in WGS84
+    longitude DOUBLE PRECISION NOT NULL,
+    latitude DOUBLE PRECISION NOT NULL,
+    road_name TEXT,
+    postcode VARCHAR(20),
+    local_authority VARCHAR(255),
+    region VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- TOID Points table for OS Features data
+CREATE TABLE toid_points (
+    id SERIAL PRIMARY KEY,
+    toid VARCHAR(20) UNIQUE NOT NULL,
+    version_date DATE,
+    source_product VARCHAR(100),
+    geom GEOMETRY(POINT, 27700), -- OS National Grid coordinate system
+    longitude DOUBLE PRECISION NOT NULL,
+    latitude DOUBLE PRECISION NOT NULL,
+    usrn VARCHAR(20) REFERENCES usrn(usrn), -- Foreign key to usrn table
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for USRN table
+CREATE INDEX idx_usrn_geom ON usrn USING GIST (geom);
+CREATE INDEX idx_usrn_usrn ON usrn (usrn);
+CREATE INDEX idx_usrn_coordinates ON usrn (longitude, latitude);
+CREATE INDEX idx_usrn_road_name ON usrn (road_name);
+CREATE INDEX idx_usrn_postcode ON usrn (postcode);
+
+-- Index for spatial queries on TOID points
+CREATE INDEX idx_toid_points_geom ON toid_points USING GIST (geom);
+CREATE INDEX idx_toid_points_toid ON toid_points (toid);
+CREATE INDEX idx_toid_points_coordinates ON toid_points (longitude, latitude);
+CREATE INDEX idx_toid_points_usrn ON toid_points (usrn);
+
+COMMENT ON TABLE usrn IS 'OS Features USRN data for street/road identification';
+COMMENT ON COLUMN usrn.usrn IS 'Unique Street Reference Number';
+COMMENT ON COLUMN usrn.geom IS 'LineString or Point geometry in WGS84 (EPSG:4326)';
+COMMENT ON COLUMN usrn.road_name IS 'Street/road name from Linked Identifiers API';
+COMMENT ON COLUMN usrn.postcode IS 'Postcode from Linked Identifiers API';
+
+COMMENT ON TABLE toid_points IS 'OS Features TOID points for road network locations';
+COMMENT ON COLUMN toid_points.toid IS 'Ordnance Survey Topographic Identifier';
+COMMENT ON COLUMN toid_points.geom IS 'Point geometry in OS National Grid (EPSG:27700)';
+COMMENT ON COLUMN toid_points.longitude IS 'WGS84 longitude for easy integration with mapping APIs';
+COMMENT ON COLUMN toid_points.latitude IS 'WGS84 latitude for easy integration with mapping APIs';
+COMMENT ON COLUMN toid_points.usrn IS 'Associated USRN for this TOID';
+
 COMMENT ON COLUMN photos.street_point_id IS 'Reference to street point (nullable in Phase 1, will be populated when OS API integration is added)';
 COMMENT ON COLUMN photos.compass_angle IS 'Camera direction in degrees (0=North, 90=East, 180=South, 270=West)';
 COMMENT ON COLUMN quality_results.failure_reasons IS 'Array of reasons why image failed quality check';
