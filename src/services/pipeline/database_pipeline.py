@@ -12,7 +12,7 @@ import logging
 from datetime import datetime
 from typing import Any, Optional
 
-from ...database import DatabaseService
+from ...database.services.database_service import DatabaseService
 from .pipeline_result import PipelineResult
 from .road_analysis_pipeline import RoadAnalysisPipeline
 

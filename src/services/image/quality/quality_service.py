@@ -11,7 +11,7 @@ from .segmentation import RoadSegmentation
 
 # Add config to path
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from config import QualityConfig
+from src.config import QualityConfig
 
 
 class ImageQualityService:

@@ -21,10 +21,11 @@ from PIL import Image
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from src.services.road_quality import RoadQualityMetrics, RoadQualityService
-from src.services.road_quality.model_factory import ModelFactory
-from src.services.road_quality.preprocessor import ImagePreprocessor
-from src.services.road_quality.yolo_model import YOLOv8RoadModel
+from src.services.road.analysis.metrics import RoadQualityMetrics
+from src.services.road.analysis.road_quality_service import RoadQualityService
+from src.services.road.analysis.model_factory import ModelFactory
+from src.services.road.analysis.preprocessor import ImagePreprocessor
+from src.services.road.analysis.yolo_model import YOLOv8RoadModel
 
 
 class TestRoadQualityMetrics(unittest.TestCase):
