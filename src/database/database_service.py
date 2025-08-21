@@ -131,7 +131,7 @@ class DatabaseService:
                            ST_Y(location) as latitude, ST_X(location) as longitude,
                            date_taken, created_at
                     FROM photos
-                    WHERE ST_Equals(location, ST_MakePoint(%s, %s))
+                    WHERE ST_Equals(location, ST_SetSRID(ST_MakePoint(%s, %s), 4326))
                       AND date_taken = %s
                 """,
                     (lon, lat, date_taken),
@@ -172,11 +172,11 @@ class DatabaseService:
         with self.transaction() as conn:
             cursor = conn.cursor()
 
-            # Create PostGIS point from lat/lon
+            # Create PostGIS point from lat/lon with SRID 4326
             location_sql = None
             if location:
                 lat, lon = location
-                location_sql = f"ST_MakePoint({lon}, {lat})"
+                location_sql = f"ST_SetSRID(ST_MakePoint({lon}, {lat}), 4326)"
 
             cursor.execute(
                 f"""
@@ -191,7 +191,10 @@ class DatabaseService:
                 (street_point_id, source, source_image_id, date_taken, compass_angle),
             )
 
-            photo_id = cursor.fetchone()["id"]
+            result = cursor.fetchone()
+            photo_id = result["id"] if result else None
+            if not photo_id:
+                raise Exception("Failed to get photo ID from insert")
             logger.info(f"Saved photo {photo_id}: {source}:{source_image_id}")
             return photo_id
 
@@ -240,7 +243,10 @@ class DatabaseService:
                 ),
             )
 
-            quality_id = cursor.fetchone()["id"]
+            result = cursor.fetchone()
+            quality_id = result["id"] if result else None
+            if not quality_id:
+                raise Exception("Failed to get quality result ID from insert")
             logger.info(
                 f"Saved quality result {quality_id} for photo {photo_id}: usable={quality_metrics.is_usable}"
             )
@@ -269,6 +275,9 @@ class DatabaseService:
             }
             crack_severity = crack_severity_map.get(road_metrics.crack_severity, "none")
 
+            # Map surface type (if available in road_metrics)
+            surface_type = getattr(road_metrics, "surface_type", None)
+
             # Determine quality rating from overall score
             score = road_metrics.overall_quality_score
             if score >= 90:
@@ -287,11 +296,11 @@ class DatabaseService:
                 INSERT INTO road_analysis_results (
                     photo_id, overall_quality_score, quality_rating,
                     crack_confidence, crack_severity, pothole_confidence, pothole_count,
-                    surface_roughness, lane_marking_visibility, debris_score,
+                    surface_roughness, surface_type, lane_marking_visibility, debris_score,
                     weather_condition, assessment_confidence,
                     model_name, model_version
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 ) RETURNING id
             """,
                 (
@@ -303,6 +312,7 @@ class DatabaseService:
                     road_metrics.pothole_confidence,
                     road_metrics.pothole_count,
                     road_metrics.surface_roughness,
+                    surface_type,
                     road_metrics.lane_marking_visibility,
                     road_metrics.debris_score,
                     road_metrics.weather_condition,
@@ -312,7 +322,10 @@ class DatabaseService:
                 ),
             )
 
-            analysis_id = cursor.fetchone()["id"]
+            result = cursor.fetchone()
+            analysis_id = result["id"] if result else None
+            if not analysis_id:
+                raise Exception("Failed to get road analysis ID from insert")
             logger.info(
                 f"Saved road analysis {analysis_id} for photo {photo_id}: score={road_metrics.overall_quality_score:.1f}"
             )
@@ -389,4 +402,15 @@ class DatabaseService:
             """)
 
             result = cursor.fetchone()
-            return dict(result) if result else {}
+            if result:
+                return {
+                    'total_photos': result['total_photos'] or 0,
+                    'quality_assessed': result['quality_assessed'] or 0,
+                    'usable_photos': result['usable_photos'] or 0,
+                    'road_analyzed': result['road_analyzed'] or 0,
+                    'avg_quality_score': float(result['avg_quality_score']) if result['avg_quality_score'] else None,
+                    'avg_road_score': float(result['avg_road_score']) if result['avg_road_score'] else None,
+                    'last_quality_assessment': result['last_quality_assessment'],
+                    'last_road_analysis': result['last_road_analysis']
+                }
+            return {}
