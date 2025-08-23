@@ -1,6 +1,7 @@
-import psycopg2
 from psycopg2.extras import execute_values
+
 from db.db_config import get_connection
+
 
 def init_toid_table():
     create_query = """
@@ -21,6 +22,7 @@ def init_toid_table():
         conn.commit()
     conn.close()
 
+
 def save_toids_to_db(features):
     connection = get_connection()
     cursor = connection.cursor()
@@ -36,7 +38,7 @@ def save_toids_to_db(features):
             cursor,
             insert_query,
             features,
-            template="(%s, %s, %s, ST_GeomFromText(%s, 4326), %s, %s)"
+            template="(%s, %s, %s, ST_GeomFromText(%s, 4326), %s, %s)",
         )
         connection.commit()
 
