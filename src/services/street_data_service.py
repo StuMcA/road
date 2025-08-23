@@ -12,8 +12,11 @@ This service replaces:
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+import time
+import threading
 
 from ..clients.ordnance_survey.os_features_client import OSFeaturesClient
 from ..clients.ordnance_survey.os_names_client import OSNamesClient
@@ -21,6 +24,35 @@ from ..database.services.database_service import DatabaseService
 
 
 logger = logging.getLogger(__name__)
+
+
+class RateLimiter:
+    """Thread-safe rate limiter for API calls."""
+    
+    def __init__(self, max_requests_per_minute: int = 600):
+        self.max_requests = max_requests_per_minute
+        self.requests_times = []
+        self.lock = threading.Lock()
+    
+    def wait_if_needed(self):
+        """Wait if necessary to respect rate limits."""
+        with self.lock:
+            now = time.time()
+            # Remove requests older than 1 minute
+            self.requests_times = [t for t in self.requests_times if now - t < 60]
+            
+            if len(self.requests_times) >= self.max_requests:
+                # Calculate wait time
+                oldest_request = min(self.requests_times)
+                wait_time = 60 - (now - oldest_request) + 0.1  # Small buffer
+                if wait_time > 0:
+                    logger.debug(f"Rate limit reached, waiting {wait_time:.2f} seconds")
+                    time.sleep(wait_time)
+                    # Clean up again after waiting
+                    now = time.time()
+                    self.requests_times = [t for t in self.requests_times if now - t < 60]
+            
+            self.requests_times.append(now)
 
 
 class StreetDataService:
@@ -38,6 +70,7 @@ class StreetDataService:
         self.features_client = OSFeaturesClient()
         self.names_client = OSNamesClient()
         self.db_service = DatabaseService()
+        self.rate_limiter = RateLimiter(max_requests_per_minute=600)  # OS API fair use limit
         
         self.version = "1.0.0"
         
@@ -100,25 +133,31 @@ class StreetDataService:
                 results["end_time"] = datetime.now().isoformat()
                 return results
             
-            # Step 2: Enrich with street metadata from OS Names API
-            logger.info("Enriching features with street metadata...")
-            enriched_features = self._enrich_with_metadata(
+            # Step 2: Enrich with street metadata from OS Names API and save in batches
+            logger.info("Enriching features with street metadata and saving in batches...")
+            saved_count = self._enrich_with_metadata(
                 toid_features, metadata_radius_m, results
             )
-            
-            results["features_with_metadata"] = sum(
-                1 for feature in enriched_features 
-                if any([
-                    feature.get("street_name"),
-                    feature.get("locality"),
-                    feature.get("region")
-                ])
-            )
-            
-            # Step 3: Save to database
-            logger.info("Saving enriched features to database...")
-            saved_count = self._save_street_data(enriched_features, results)
             results["features_saved"] = saved_count
+            
+            # Calculate features with metadata from database
+            # (We'll count this from the database since features are saved as we go)
+            try:
+                with self.db_service.transaction() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT COUNT(*) as count_with_metadata
+                        FROM street_points sp
+                        WHERE sp.toid IS NOT NULL 
+                        AND (sp.local_authority IS NOT NULL 
+                             OR sp.postcode IS NOT NULL
+                             OR sp.region IS NOT NULL)
+                    """)
+                    result = cursor.fetchone()
+                    results["features_with_metadata"] = result["count_with_metadata"] if result else 0
+            except Exception as e:
+                logger.warning(f"Could not count features with metadata: {e}")
+                results["features_with_metadata"] = 0
             
             # Finalize results
             results["success"] = True
@@ -143,91 +182,163 @@ class StreetDataService:
         
         return results
     
+    def _process_single_feature_metadata(self, feature_tuple: Tuple, radius_m: int) -> Dict[str, Any]:
+        """Process a single feature for metadata enrichment (thread-safe)."""
+        # Unpack feature data - handle both 6 and 8 element tuples
+        if len(feature_tuple) == 8:
+            toid, version_date, source_product, geom_wkt, longitude, latitude, easting, northing = feature_tuple
+        else:
+            # Fallback for 6-element tuples (missing easting/northing)
+            toid, version_date, source_product, geom_wkt, longitude, latitude = feature_tuple
+            easting, northing = None, None
+        
+        # Create base feature data
+        feature_data = {
+            "toid": toid,
+            "version_date": version_date,
+            "source_product": source_product,
+            "geometry_wkt": geom_wkt,
+            "longitude": longitude,
+            "latitude": latitude,
+            "easting": easting,
+            "northing": northing,
+            "street_name": None,
+            "local_authority": None,
+            "region": None,
+            "postcode": None,
+            "metadata_success": False,
+            "metadata_error": None
+        }
+        
+        # Try to get street metadata if we have BNG coordinates
+        if easting and northing:
+            try:
+                # Rate limiting for API calls
+                self.rate_limiter.wait_if_needed()
+                
+                street_metadata = self.names_client.get_street_metadata(
+                    easting=easting,
+                    northing=northing,
+                    radius=radius_m
+                )
+                
+                # Update feature with metadata
+                feature_data.update({
+                    "street_name": street_metadata.get("street_name"),
+                    "local_authority": street_metadata.get("local_authority"),
+                    "region": street_metadata.get("region"),
+                    "postcode": street_metadata.get("postcode")
+                })
+                
+                if any(street_metadata.values()):
+                    feature_data["metadata_success"] = True
+                    logger.debug(f"Found metadata for TOID {toid}")
+                
+            except Exception as e:
+                feature_data["metadata_error"] = f"Failed to get metadata for TOID {toid}: {e}"
+                logger.warning(feature_data["metadata_error"])
+        else:
+            logger.debug(f"No BNG coordinates available for TOID {toid}, skipping metadata lookup")
+        
+        return feature_data
+    
     def _enrich_with_metadata(
         self, 
         toid_features: List[Tuple], 
         radius_m: int,
-        results: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        results: Dict[str, Any],
+        max_workers: int = 10,
+        batch_size: int = 50
+    ) -> int:
         """
-        Enrich TOID features with street metadata from OS Names API.
+        Enrich TOID features with street metadata from OS Names API using multithreading.
+        Features are saved to database in batches as they're processed to minimize memory usage.
         
         Args:
             toid_features: List of TOID feature tuples from Features API
             radius_m: Search radius in meters for metadata
             results: Results dictionary to update with errors
+            max_workers: Maximum number of concurrent threads
+            batch_size: Number of features to save per database batch
             
         Returns:
-            List of enriched feature dictionaries
+            Number of features successfully saved to database
         """
-        enriched_features = []
         total_features = len(toid_features)
+        completed = 0
+        saved_count = 0
+        batch = []
         
-        for i, feature_tuple in enumerate(toid_features, 1):
-            # Unpack feature data - handle both 6 and 8 element tuples
-            if len(feature_tuple) == 8:
-                toid, version_date, source_product, geom_wkt, longitude, latitude, easting, northing = feature_tuple
-            else:
-                # Fallback for 6-element tuples (missing easting/northing)
-                toid, version_date, source_product, geom_wkt, longitude, latitude = feature_tuple
-                easting, northing = None, None
-            
-            logger.debug(f"Processing feature {i}/{total_features}: {toid}")
-            
-            # Create base feature data
-            feature_data = {
-                "toid": toid,
-                "version_date": version_date,
-                "source_product": source_product,
-                "geometry_wkt": geom_wkt,
-                "longitude": longitude,
-                "latitude": latitude,
-                "easting": easting,
-                "northing": northing,
-                "street_name": None,
-                "locality": None,
-                "region": None,
-                "postcode_area": None
+        logger.info(f"Starting multithreaded metadata enrichment with {max_workers} workers, batch size {batch_size}")
+        
+        # Ensure database is ready
+        try:
+            self._ensure_street_points_data()
+        except Exception as e:
+            error_msg = f"Failed to ensure street_points table: {e}"
+            logger.error(error_msg)
+            results["processing_errors"].append({
+                "error": error_msg,
+                "timestamp": datetime.now().isoformat()
+            })
+            return 0
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_index = {
+                executor.submit(self._process_single_feature_metadata, feature_tuple, radius_m): i
+                for i, feature_tuple in enumerate(toid_features)
             }
             
-            # Try to get street metadata if we have BNG coordinates
-            if easting and northing:
+            # Process completed tasks
+            for future in as_completed(future_to_index):
                 try:
-                    street_metadata = self.names_client.get_street_metadata(
-                        easting=easting,
-                        northing=northing,
-                        radius=radius_m
-                    )
+                    feature_data = future.result()
                     
-                    # Update feature with metadata
-                    feature_data.update({
-                        "street_name": street_metadata.get("street_name"),
-                        "locality": street_metadata.get("locality"),
-                        "region": street_metadata.get("region"),
-                        "postcode_area": street_metadata.get("postcode_area")
-                    })
+                    # Handle metadata errors
+                    if feature_data.get("metadata_error"):
+                        results["processing_errors"].append({
+                            "toid": feature_data["toid"],
+                            "error": feature_data["metadata_error"],
+                            "timestamp": datetime.now().isoformat()
+                        })
                     
-                    if any(street_metadata.values()):
-                        logger.debug(f"Found metadata for TOID {toid}")
+                    # Add to batch
+                    batch.append(feature_data)
+                    completed += 1
                     
+                    # Save batch when full
+                    if len(batch) >= batch_size:
+                        batch_saved = self._save_street_data(batch, results)
+                        saved_count += batch_saved
+                        batch.clear()
+                        
+                        logger.info(f"Processed {completed}/{total_features} features for metadata, saved {saved_count} total")
+                    
+                    # Progress update for partial batches
+                    elif completed % 50 == 0:
+                        logger.info(f"Processed {completed}/{total_features} features for metadata")
+                        
                 except Exception as e:
-                    error_msg = f"Failed to get metadata for TOID {toid}: {e}"
+                    index = future_to_index[future]
+                    toid = toid_features[index][0] if len(toid_features[index]) > 0 else "unknown"
+                    error_msg = f"Failed to process feature {toid}: {e}"
                     logger.warning(error_msg)
                     results["processing_errors"].append({
                         "toid": toid,
                         "error": error_msg,
                         "timestamp": datetime.now().isoformat()
                     })
-            else:
-                logger.debug(f"No BNG coordinates available for TOID {toid}, skipping metadata lookup")
+                    completed += 1
             
-            enriched_features.append(feature_data)
-            
-            # Progress logging
-            if i % 50 == 0 or i == total_features:
-                logger.info(f"Processed {i}/{total_features} features for metadata")
+            # Save any remaining features in the final batch
+            if batch:
+                batch_saved = self._save_street_data(batch, results)
+                saved_count += batch_saved
+                logger.info(f"Final batch: saved {batch_saved} features, total saved: {saved_count}")
         
-        return enriched_features
+        logger.info(f"Metadata enrichment completed: {saved_count}/{total_features} features saved to database")
+        return saved_count
     
     def _save_street_data(
         self, 
@@ -266,20 +377,21 @@ class StreetDataService:
                     
                     # First, ensure the street exists or create it
                     street_name = feature["street_name"] or "Unknown Street"
-                    cursor.execute("""
-                        INSERT INTO streets (street_name) 
-                        VALUES (%s)
-                        ON CONFLICT DO NOTHING
-                        RETURNING id
-                    """, (street_name,))
                     
+                    # Try to get existing street first
+                    cursor.execute("SELECT id FROM streets WHERE street_name = %s", (street_name,))
                     street_result = cursor.fetchone()
+                    
                     if street_result:
-                        street_id = street_result[0]
+                        street_id = street_result['id']
                     else:
-                        # Street already exists, get its ID
-                        cursor.execute("SELECT id FROM streets WHERE street_name = %s", (street_name,))
-                        street_id = cursor.fetchone()[0]
+                        # Street doesn't exist, create it
+                        cursor.execute("""
+                            INSERT INTO streets (street_name) 
+                            VALUES (%s)
+                            RETURNING id
+                        """, (street_name,))
+                        street_id = cursor.fetchone()['id']
                     
                     # Insert into street_points with TOID data
                     cursor.execute("""
@@ -305,8 +417,8 @@ class StreetDataService:
                         street_id,
                         feature["longitude"],
                         feature["latitude"],
-                        feature["postcode_area"],
-                        feature["locality"],
+                        feature["postcode"],
+                        feature["local_authority"],
                         feature["region"],
                         feature["toid"],
                         feature["version_date"],
@@ -319,11 +431,14 @@ class StreetDataService:
                         saved_count += 1
                         
             except Exception as e:
-                error_msg = f"Failed to save feature {feature['toid']}: {e}"
-                logger.warning(error_msg)
+                import traceback
+                full_error = traceback.format_exc()
+                error_msg = f"Failed to save feature {feature['toid']}: {type(e).__name__}: {e}"
+                logger.warning(f"{error_msg}\nFull traceback: {full_error}")
                 results["processing_errors"].append({
                     "toid": feature["toid"],
                     "error": error_msg,
+                    "full_error": full_error,
                     "timestamp": datetime.now().isoformat()
                 })
                 continue
@@ -399,7 +514,7 @@ class StreetDataService:
         self, 
         bbox: Optional[List[float]] = None,
         street_name: Optional[str] = None,
-        locality: Optional[str] = None,
+        local_authority: Optional[str] = None,
         limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
@@ -408,7 +523,7 @@ class StreetDataService:
         Args:
             bbox: Optional bounding box [min_lon, min_lat, max_lon, max_lat]
             street_name: Optional street name filter (partial match)
-            locality: Optional locality filter (partial match)
+            local_authority: Optional local_authority filter (partial match)
             limit: Optional limit on results
             
         Returns:
@@ -432,16 +547,16 @@ class StreetDataService:
                     where_clauses.append("s.street_name ILIKE %s")
                     params.append(f"%{street_name}%")
                 
-                if locality:
+                if local_authority:
                     where_clauses.append("sp.local_authority ILIKE %s")
-                    params.append(f"%{locality}%")
+                    params.append(f"%{local_authority}%")
                 
                 query = """
                     SELECT 
                         sp.toid, sp.version_date, sp.source_product,
                         ST_X(sp.location) as longitude, ST_Y(sp.location) as latitude, 
                         sp.easting, sp.northing,
-                        s.street_name, sp.local_authority as locality, sp.region, sp.postcode as postcode_area,
+                        s.street_name, sp.local_authority as local_authority, sp.region, sp.postcode as postcode,
                         sp.created_at, sp.created_at as updated_at
                     FROM street_points sp
                     LEFT JOIN streets s ON sp.street_id = s.id
@@ -492,7 +607,7 @@ class StreetDataService:
                         sp.id, sp.toid, sp.version_date, sp.source_product,
                         ST_X(sp.location) as longitude, ST_Y(sp.location) as latitude, 
                         sp.easting, sp.northing,
-                        s.street_name, sp.local_authority as locality, sp.region, sp.postcode as postcode_area,
+                        s.street_name, sp.local_authority as local_authority, sp.region, sp.postcode as postcode,
                         sp.created_at, sp.created_at as updated_at,
                         ST_Distance(sp.location::geography, ST_MakePoint(%s, %s)::geography) as distance_m
                     FROM street_points sp
@@ -526,7 +641,7 @@ class StreetDataService:
                     SELECT 
                         COUNT(*) as total_features,
                         COUNT(s.street_name) as features_with_street_name,
-                        COUNT(sp.local_authority) as features_with_locality,
+                        COUNT(sp.local_authority) as features_with_local_authority,
                         COUNT(sp.region) as features_with_region,
                         COUNT(DISTINCT s.street_name) as unique_street_names,
                         COUNT(DISTINCT sp.local_authority) as unique_localities,
@@ -542,13 +657,13 @@ class StreetDataService:
                 if stats["total_features"] > 0:
                     stats["metadata_coverage"] = {
                         "street_name_pct": (stats["features_with_street_name"] / stats["total_features"]) * 100,
-                        "locality_pct": (stats["features_with_locality"] / stats["total_features"]) * 100,
+                        "local_authority_pct": (stats["features_with_local_authority"] / stats["total_features"]) * 100,
                         "region_pct": (stats["features_with_region"] / stats["total_features"]) * 100
                     }
                 else:
                     stats["metadata_coverage"] = {
                         "street_name_pct": 0,
-                        "locality_pct": 0,
+                        "local_authority_pct": 0,
                         "region_pct": 0
                     }
                 

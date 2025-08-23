@@ -149,7 +149,7 @@ class TOIDAnalysisPipeline:
                         sp.id, sp.toid, sp.version_date, sp.source_product,
                         ST_X(sp.location) as longitude, ST_Y(sp.location) as latitude, 
                         sp.easting, sp.northing,
-                        s.street_name, sp.local_authority as locality, sp.region, sp.postcode as postcode_area,
+                        s.street_name, sp.local_authority as local_authority, sp.region, sp.postcode as postcode,
                         sp.created_at, sp.created_at as updated_at
                     FROM street_points sp
                     LEFT JOIN streets s ON sp.street_id = s.id
