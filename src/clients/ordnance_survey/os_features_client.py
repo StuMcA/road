@@ -246,7 +246,7 @@ class OSFeaturesClient:
         
         # Add bbox if provided
         if bbox:
-            params["bbox"] = f"{bbox[1]},{bbox[0]},{bbox[3]},{bbox[2]}"  # Format: min_lat,min_lon,max_lat,max_lon
+            params["bbox"] = f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}"  # Format: min_lon,min_lat,max_lon,max_lat
         
         logger.debug(f"Fetching {count} TOID features for USRN {usrn} from index {start}")
         
@@ -315,7 +315,7 @@ class OSFeaturesClient:
             "typeNames": "OpenUSRN_USRN",
             "srsName": "EPSG:4326",
             "outputFormat": "GEOJSON",
-            "bbox": f"{bbox[1]},{bbox[0]},{bbox[3]},{bbox[2]}",  # Format: min_lat,min_lon,max_lat,max_lon
+            "bbox": f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}",  # Format: min_lon,min_lat,max_lon,max_lat
             "count": count,
             "startIndex": start,
         }
@@ -386,7 +386,7 @@ class OSFeaturesClient:
             "typeNames": "OpenTOID_HighwaysNetwork",
             "srsName": "EPSG:4326",
             "outputFormat": "GEOJSON",
-            "bbox": f"{bbox[1]},{bbox[0]},{bbox[3]},{bbox[2]}",  # Format: min_lat,min_lon,max_lat,max_lon
+            "bbox": f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}",  # Format: min_lon,min_lat,max_lon,max_lat
             "count": count,
             "startIndex": start,
         }

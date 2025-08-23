@@ -124,7 +124,13 @@ class OSNamesClient:
         except Exception as e:
             logger.warning(f"Failed to get postcode data for BNG ({easting}, {northing}): {e}")
         
-        return result
+        # Map to expected field names
+        return {
+            "street_name": result.get("NAME1"),
+            "local_authority": result.get("COUNTY_UNITARY"), 
+            "region": result.get("REGION"),
+            "postcode": result.get("POSTCODE")
+        }
 
     def batch_lookup_street_metadata(
         self, 
@@ -152,9 +158,9 @@ class OSNamesClient:
                 logger.warning(f"Failed to lookup BNG coordinates ({easting}, {northing}): {e}")
                 results.append({
                     "street_name": None,
-                    "locality": None,
+                    "local_authority": None,
                     "region": None,
-                    "postcode_area": None
+                    "postcode": None
                 })
             
             # Rate limiting between requests
