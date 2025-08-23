@@ -43,9 +43,9 @@ class StreetDataService:
         
         # Ensure database schema is set up on initialization
         try:
-            self._ensure_street_data_table()
+            self._ensure_street_points_data()
         except Exception as e:
-            logger.warning(f"Could not ensure street_data table setup on init: {e}")
+            logger.warning(f"Could not ensure street_points table setup on init: {e}")
             
         logger.info("StreetDataService initialized")
     
@@ -246,11 +246,11 @@ class StreetDataService:
         """
         saved_count = 0
         
-        # Ensure street_data table exists
+        # Ensure street_points table is properly set up
         try:
-            self._ensure_street_data_table()
+            self._ensure_street_points_data()
         except Exception as e:
-            error_msg = f"Failed to ensure street_data table: {e}"
+            error_msg = f"Failed to ensure street_points table: {e}"
             logger.error(error_msg)
             results["processing_errors"].append({
                 "error": error_msg,
@@ -264,44 +264,55 @@ class StreetDataService:
                 with self.db_service.transaction() as conn:
                     cursor = conn.cursor()
                     
+                    # First, ensure the street exists or create it
+                    street_name = feature["street_name"] or "Unknown Street"
                     cursor.execute("""
-                        INSERT INTO street_data (
-                            toid, version_date, source_product, 
-                            geom, longitude, latitude, easting, northing,
-                            street_name, locality, region, postcode_area
+                        INSERT INTO streets (street_name) 
+                        VALUES (%s)
+                        ON CONFLICT DO NOTHING
+                        RETURNING id
+                    """, (street_name,))
+                    
+                    street_result = cursor.fetchone()
+                    if street_result:
+                        street_id = street_result[0]
+                    else:
+                        # Street already exists, get its ID
+                        cursor.execute("SELECT id FROM streets WHERE street_name = %s", (street_name,))
+                        street_id = cursor.fetchone()[0]
+                    
+                    # Insert into street_points with TOID data
+                    cursor.execute("""
+                        INSERT INTO street_points (
+                            street_id, location, postcode, local_authority, region,
+                            toid, version_date, source_product, easting, northing
                         )
                         VALUES (
-                            %s, %s, %s, 
-                            ST_MakePoint(%s, %s), %s, %s, %s, %s,
-                            %s, %s, %s, %s
+                            %s, ST_MakePoint(%s, %s), %s, %s, %s,
+                            %s, %s, %s, %s, %s
                         )
                         ON CONFLICT (toid) DO UPDATE SET
+                            street_id = EXCLUDED.street_id,
+                            location = EXCLUDED.location,
+                            postcode = EXCLUDED.postcode,
+                            local_authority = EXCLUDED.local_authority,
+                            region = EXCLUDED.region,
                             version_date = EXCLUDED.version_date,
                             source_product = EXCLUDED.source_product,
-                            geom = EXCLUDED.geom,
-                            longitude = EXCLUDED.longitude,
-                            latitude = EXCLUDED.latitude,
                             easting = EXCLUDED.easting,
-                            northing = EXCLUDED.northing,
-                            street_name = EXCLUDED.street_name,
-                            locality = EXCLUDED.locality,
-                            region = EXCLUDED.region,
-                            postcode_area = EXCLUDED.postcode_area,
-                            updated_at = CURRENT_TIMESTAMP
+                            northing = EXCLUDED.northing
                     """, (
+                        street_id,
+                        feature["longitude"],
+                        feature["latitude"],
+                        feature["postcode_area"],
+                        feature["locality"],
+                        feature["region"],
                         feature["toid"],
                         feature["version_date"],
                         feature["source_product"],
-                        feature["longitude"],
-                        feature["latitude"],
-                        feature["longitude"],
-                        feature["latitude"],
                         feature["easting"],
-                        feature["northing"],
-                        feature["street_name"],
-                        feature["locality"],
-                        feature["region"],
-                        feature["postcode_area"]
+                        feature["northing"]
                     ))
                     
                     if cursor.rowcount > 0:
@@ -320,42 +331,52 @@ class StreetDataService:
         logger.info(f"Saved {saved_count}/{len(features)} features to database")
         return saved_count
     
-    def _ensure_street_data_table(self):
-        """Ensure the street_data table exists with proper schema and indexes."""
+    def _ensure_street_points_data(self):
+        """Ensure the streets and street_points tables are properly set up."""
         with self.db_service.transaction() as conn:
             cursor = conn.cursor()
             
-            # Create street_data table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS street_data (
-                    id SERIAL PRIMARY KEY,
-                    toid VARCHAR(36) UNIQUE NOT NULL,
-                    version_date DATE,
-                    source_product VARCHAR(100),
-                    geom GEOMETRY(POINT, 4326),
-                    longitude DOUBLE PRECISION NOT NULL,
-                    latitude DOUBLE PRECISION NOT NULL,
-                    easting INTEGER,
-                    northing INTEGER,
-                    street_name TEXT,
-                    locality TEXT,
-                    region TEXT,
-                    postcode_area VARCHAR(10),
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            # Add street_data_id foreign key to photos table if it doesn't exist
+            # Add toid column to street_points if it doesn't exist
             cursor.execute("""
                 DO $$ 
                 BEGIN
-                    -- Check if column exists
+                    -- Check if toid column exists in street_points
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns 
-                        WHERE table_name = 'photos' AND column_name = 'street_data_id'
+                        WHERE table_name = 'street_points' AND column_name = 'toid'
                     ) THEN
-                        ALTER TABLE photos ADD COLUMN street_data_id INTEGER REFERENCES street_data(id) ON DELETE SET NULL;
+                        ALTER TABLE street_points ADD COLUMN toid VARCHAR(36) UNIQUE;
+                    END IF;
+                    
+                    -- Check if version_date column exists
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'street_points' AND column_name = 'version_date'
+                    ) THEN
+                        ALTER TABLE street_points ADD COLUMN version_date DATE;
+                    END IF;
+                    
+                    -- Check if source_product column exists
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'street_points' AND column_name = 'source_product'
+                    ) THEN
+                        ALTER TABLE street_points ADD COLUMN source_product VARCHAR(100);
+                    END IF;
+                    
+                    -- Check if easting/northing columns exist
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'street_points' AND column_name = 'easting'
+                    ) THEN
+                        ALTER TABLE street_points ADD COLUMN easting INTEGER;
+                    END IF;
+                    
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'street_points' AND column_name = 'northing'
+                    ) THEN
+                        ALTER TABLE street_points ADD COLUMN northing INTEGER;
                     END IF;
                 END $$;
             """)
@@ -367,41 +388,9 @@ class StreetDataService:
                     -- Index on TOID for fast lookups
                     IF NOT EXISTS (
                         SELECT 1 FROM pg_indexes 
-                        WHERE tablename = 'street_data' AND indexname = 'idx_street_data_toid'
+                        WHERE tablename = 'street_points' AND indexname = 'idx_street_points_toid'
                     ) THEN
-                        CREATE INDEX idx_street_data_toid ON street_data(toid);
-                    END IF;
-                    
-                    -- Spatial index on geometry
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_indexes 
-                        WHERE tablename = 'street_data' AND indexname = 'idx_street_data_geom'
-                    ) THEN
-                        CREATE INDEX idx_street_data_geom ON street_data USING GIST(geom);
-                    END IF;
-                    
-                    -- Index on street_name for text searches
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_indexes 
-                        WHERE tablename = 'street_data' AND indexname = 'idx_street_data_street_name'
-                    ) THEN
-                        CREATE INDEX idx_street_data_street_name ON street_data(street_name);
-                    END IF;
-                    
-                    -- Index on locality for location filtering
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_indexes 
-                        WHERE tablename = 'street_data' AND indexname = 'idx_street_data_locality'
-                    ) THEN
-                        CREATE INDEX idx_street_data_locality ON street_data(locality);
-                    END IF;
-                    
-                    -- Index on photos.street_data_id for fast lookups
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_indexes 
-                        WHERE tablename = 'photos' AND indexname = 'idx_photos_street_data_id'
-                    ) THEN
-                        CREATE INDEX idx_photos_street_data_id ON photos(street_data_id);
+                        CREATE INDEX idx_street_points_toid ON street_points(toid);
                     END IF;
                 END $$;
             """)
@@ -435,31 +424,35 @@ class StreetDataService:
                 
                 if bbox:
                     where_clauses.append("""
-                        ST_Within(geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))
+                        ST_Within(sp.location, ST_MakeEnvelope(%s, %s, %s, %s, 4326))
                     """)
                     params.extend(bbox)
                 
                 if street_name:
-                    where_clauses.append("street_name ILIKE %s")
+                    where_clauses.append("s.street_name ILIKE %s")
                     params.append(f"%{street_name}%")
                 
                 if locality:
-                    where_clauses.append("locality ILIKE %s")
+                    where_clauses.append("sp.local_authority ILIKE %s")
                     params.append(f"%{locality}%")
                 
                 query = """
                     SELECT 
-                        toid, version_date, source_product,
-                        longitude, latitude, easting, northing,
-                        street_name, locality, region, postcode_area,
-                        created_at, updated_at
-                    FROM street_data
+                        sp.toid, sp.version_date, sp.source_product,
+                        ST_X(sp.location) as longitude, ST_Y(sp.location) as latitude, 
+                        sp.easting, sp.northing,
+                        s.street_name, sp.local_authority as locality, sp.region, sp.postcode as postcode_area,
+                        sp.created_at, sp.created_at as updated_at
+                    FROM street_points sp
+                    LEFT JOIN streets s ON sp.street_id = s.id
+                    WHERE sp.toid IS NOT NULL
                 """
                 
-                if where_clauses:
-                    query += " WHERE " + " AND ".join(where_clauses)
+                additional_where = " AND ".join(where_clauses) if where_clauses else ""
+                if additional_where:
+                    query += " AND " + additional_where
                 
-                query += " ORDER BY created_at DESC"
+                query += " ORDER BY sp.created_at DESC"
                 
                 if limit:
                     query += f" LIMIT {limit}"
@@ -496,13 +489,16 @@ class StreetDataService:
                 
                 cursor.execute("""
                     SELECT 
-                        id, toid, version_date, source_product,
-                        longitude, latitude, easting, northing,
-                        street_name, locality, region, postcode_area,
-                        created_at, updated_at,
-                        ST_Distance(geom::geography, ST_MakePoint(%s, %s)::geography) as distance_m
-                    FROM street_data 
-                    WHERE ST_DWithin(geom::geography, ST_MakePoint(%s, %s)::geography, %s)
+                        sp.id, sp.toid, sp.version_date, sp.source_product,
+                        ST_X(sp.location) as longitude, ST_Y(sp.location) as latitude, 
+                        sp.easting, sp.northing,
+                        s.street_name, sp.local_authority as locality, sp.region, sp.postcode as postcode_area,
+                        sp.created_at, sp.created_at as updated_at,
+                        ST_Distance(sp.location::geography, ST_MakePoint(%s, %s)::geography) as distance_m
+                    FROM street_points sp
+                    LEFT JOIN streets s ON sp.street_id = s.id
+                    WHERE sp.toid IS NOT NULL 
+                      AND ST_DWithin(sp.location::geography, ST_MakePoint(%s, %s)::geography, %s)
                     ORDER BY distance_m ASC
                     LIMIT 1
                 """, (lon, lat, lon, lat, max_distance_m))
@@ -529,13 +525,15 @@ class StreetDataService:
                 cursor.execute("""
                     SELECT 
                         COUNT(*) as total_features,
-                        COUNT(street_name) as features_with_street_name,
-                        COUNT(locality) as features_with_locality,
-                        COUNT(region) as features_with_region,
-                        COUNT(DISTINCT street_name) as unique_street_names,
-                        COUNT(DISTINCT locality) as unique_localities,
-                        COUNT(DISTINCT region) as unique_regions
-                    FROM street_data
+                        COUNT(s.street_name) as features_with_street_name,
+                        COUNT(sp.local_authority) as features_with_locality,
+                        COUNT(sp.region) as features_with_region,
+                        COUNT(DISTINCT s.street_name) as unique_street_names,
+                        COUNT(DISTINCT sp.local_authority) as unique_localities,
+                        COUNT(DISTINCT sp.region) as unique_regions
+                    FROM street_points sp
+                    LEFT JOIN streets s ON sp.street_id = s.id
+                    WHERE sp.toid IS NOT NULL
                 """)
                 
                 stats = dict(cursor.fetchone())
@@ -582,5 +580,5 @@ class StreetDataService:
                 "names_client": self.names_client.get_service_info(),
                 "database_service": "DatabaseService"
             },
-            "database_table": "street_data"
+            "database_tables": ["streets", "street_points"]
         }

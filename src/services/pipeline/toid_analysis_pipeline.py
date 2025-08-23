@@ -146,16 +146,19 @@ class TOIDAnalysisPipeline:
                 
                 query = """
                     SELECT 
-                        id, toid, version_date, source_product,
-                        longitude, latitude, easting, northing,
-                        street_name, locality, region, postcode_area,
-                        created_at, updated_at
-                    FROM street_data 
-                    WHERE ST_Within(
-                        geom,
+                        sp.id, sp.toid, sp.version_date, sp.source_product,
+                        ST_X(sp.location) as longitude, ST_Y(sp.location) as latitude, 
+                        sp.easting, sp.northing,
+                        s.street_name, sp.local_authority as locality, sp.region, sp.postcode as postcode_area,
+                        sp.created_at, sp.created_at as updated_at
+                    FROM street_points sp
+                    LEFT JOIN streets s ON sp.street_id = s.id
+                    WHERE sp.toid IS NOT NULL
+                      AND ST_Within(
+                        sp.location,
                         ST_MakeEnvelope(%s, %s, %s, %s, 4326)
                     )
-                    ORDER BY created_at DESC
+                    ORDER BY sp.created_at DESC
                 """
                 
                 params = bbox
@@ -372,7 +375,7 @@ class TOIDAnalysisPipeline:
                     ) if mapillary_data.get("geometry") else None,
                     date_taken=self.database_pipeline._parse_mapillary_date(mapillary_data.get("captured_at")),
                     compass_angle=self.database_pipeline._validate_compass_angle(mapillary_data.get("compass_angle")),
-                    street_data_id=street_data_id  # KEY: Link to street data
+                    street_point_id=street_data_id  # KEY: Link to street point
                 )
 
                 processed_images.append(result)
@@ -541,12 +544,14 @@ class TOIDAnalysisPipeline:
                 cursor.execute("""
                     SELECT 
                         COUNT(*) as total_street_data,
-                        COUNT(street_name) as entries_with_street_name,
-                        COUNT(DISTINCT street_name) as unique_street_names,
-                        COUNT(DISTINCT locality) as unique_localities,
-                        MIN(created_at) as earliest_entry,
-                        MAX(created_at) as latest_entry
-                    FROM street_data
+                        COUNT(s.street_name) as entries_with_street_name,
+                        COUNT(DISTINCT s.street_name) as unique_street_names,
+                        COUNT(DISTINCT sp.local_authority) as unique_localities,
+                        MIN(sp.created_at) as earliest_entry,
+                        MAX(sp.created_at) as latest_entry
+                    FROM street_points sp
+                    LEFT JOIN streets s ON sp.street_id = s.id
+                    WHERE sp.toid IS NOT NULL
                 """)
                 
                 stats = dict(cursor.fetchone())
@@ -554,12 +559,12 @@ class TOIDAnalysisPipeline:
                 # Get geographical bounds
                 cursor.execute("""
                     SELECT 
-                        ST_XMin(ST_Extent(geom)) as min_longitude,
-                        ST_YMin(ST_Extent(geom)) as min_latitude,
-                        ST_XMax(ST_Extent(geom)) as max_longitude,
-                        ST_YMax(ST_Extent(geom)) as max_latitude
-                    FROM street_data
-                    WHERE geom IS NOT NULL
+                        ST_XMin(ST_Extent(location)) as min_longitude,
+                        ST_YMin(ST_Extent(location)) as min_latitude,
+                        ST_XMax(ST_Extent(location)) as max_longitude,
+                        ST_YMax(ST_Extent(location)) as max_latitude
+                    FROM street_points
+                    WHERE location IS NOT NULL AND toid IS NOT NULL
                 """)
                 
                 bounds_result = cursor.fetchone()
