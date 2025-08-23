@@ -4,6 +4,7 @@ from pathlib import Path
 
 from ..image_quality import ImageQualityService
 from ..road_quality import RoadQualityService
+from ..image_fetcher import ImageFetcherService
 from .pipeline_result import PipelineResult
 
 
@@ -12,22 +13,25 @@ class RoadAnalysisPipeline:
     Complete pipeline for road quality analysis with quality gating
     
     Flow:
-    1. Image Quality Check (fast heuristics + AI segmentation)
-    2. Quality Gate (only proceed if image is usable)
-    3. Road Quality Analysis (expensive AI analysis)
-    4. Return combined results
+    1. [Optional] Image Fetching (from coordinates via Mapillary API)
+    2. Image Quality Check (fast heuristics + AI segmentation)
+    3. Quality Gate (only proceed if image is usable)
+    4. Road Quality Analysis (expensive AI analysis)
+    5. Return combined results
     """
     
-    def __init__(self, road_model_path: Optional[str] = None):
+    def __init__(self, road_model_path: Optional[str] = None, enable_fetcher: bool = True):
         """
         Initialize pipeline services
         
         Args:
             road_model_path: Optional path to custom road quality model
+            enable_fetcher: Whether to initialize image fetcher service
         """
         self.quality_service = ImageQualityService()
         self.road_service = RoadQualityService(road_model_path)
-        self.version = "1.0.0"
+        self.fetcher_service = ImageFetcherService() if enable_fetcher else None
+        self.version = "1.1.0"
     
     def process_image(self, image_path: str) -> PipelineResult:
         """
@@ -99,6 +103,37 @@ class RoadAnalysisPipeline:
             results[image_path] = self.process_image(image_path)
         return results
     
+    def process_coordinate(
+        self,
+        lat: float,
+        lon: float,
+        radius_m: Optional[float] = None,
+        limit: int = 10,
+        output_dir: Optional[str] = None
+    ) -> Dict:
+        """
+        Fetch images at coordinates and process through complete pipeline
+        
+        Args:
+            lat: Latitude in degrees
+            lon: Longitude in degrees
+            radius_m: Radius in meters for image search
+            limit: Maximum number of images to fetch
+            output_dir: Directory to download images
+            
+        Returns:
+            Complete results including fetch info and pipeline analysis
+            
+        Raises:
+            ValueError: If fetcher service is not enabled
+        """
+        if self.fetcher_service is None:
+            raise ValueError("Image fetcher service not enabled. Initialize with enable_fetcher=True")
+        
+        return self.fetcher_service.fetch_and_process_images(
+            lat, lon, self, radius_m, limit, output_dir
+        )
+    
     def get_pipeline_stats(self, results: Dict[str, PipelineResult]) -> Dict[str, any]:
         """
         Generate statistics from batch processing results
@@ -154,11 +189,17 @@ class RoadAnalysisPipeline:
     
     def get_service_info(self) -> Dict[str, any]:
         """Get information about pipeline components"""
-        return {
+        info = {
             "pipeline_version": self.version,
             "quality_service": {
                 "version": self.quality_service.version,
                 "segmentation_available": self.quality_service.segmentation.model_loaded
             },
-            "road_service": self.road_service.get_service_info()
+            "road_service": self.road_service.get_service_info(),
+            "fetcher_service": None
         }
+        
+        if self.fetcher_service is not None:
+            info["fetcher_service"] = self.fetcher_service.get_service_info()
+            
+        return info
