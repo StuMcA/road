@@ -8,7 +8,9 @@ from dataclasses import dataclass
 
 @dataclass
 class RoadConfig:
+    
     """Configuration for road quality analysis"""
+    default_bbox = [55.855737,-3.543777,56.052561,-2.862625]
 
     # Model settings
     default_model_type: str = "yolo"

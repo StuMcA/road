@@ -1,9 +1,9 @@
 import time
 from typing import Optional
 
-from ..image_fetcher import ImageFetcherService
-from ..image_quality import ImageQualityService
-from ..road_quality import RoadQualityService
+from ..image.fetcher_service import ImageFetcherService
+from ..image.quality.quality_service import ImageQualityService
+from ..road.analysis.road_quality_service import RoadQualityService
 from .pipeline_result import PipelineResult
 
 

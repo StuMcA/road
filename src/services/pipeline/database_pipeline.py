@@ -12,7 +12,7 @@ import logging
 from datetime import datetime
 from typing import Any, Optional
 
-from ...database import DatabaseService
+from ...database.services.database_service import DatabaseService
 from .pipeline_result import PipelineResult
 from .road_analysis_pipeline import RoadAnalysisPipeline
 
@@ -81,6 +81,7 @@ class DatabasePipeline(RoadAnalysisPipeline):
         location: Optional[tuple[float, float]] = None,
         date_taken: Optional[datetime] = None,
         compass_angle: Optional[float] = None,
+        street_point_id: Optional[int] = None,
     ) -> dict[str, Any]:
         """
         Process image and save all results to database.
@@ -92,6 +93,7 @@ class DatabasePipeline(RoadAnalysisPipeline):
             location: (latitude, longitude) tuple
             date_taken: When photo was captured
             compass_angle: Camera direction in degrees
+            street_point_id: Reference to street point entry
 
         Returns:
             Dictionary with processing results and database IDs
@@ -133,6 +135,7 @@ class DatabasePipeline(RoadAnalysisPipeline):
                 location=location,
                 date_taken=date_taken,
                 compass_angle=compass_angle,
+                street_point_id=street_point_id,
             )
 
         except Exception as e:
@@ -147,6 +150,7 @@ class DatabasePipeline(RoadAnalysisPipeline):
         location: tuple[float, float] = None,
         date_taken: datetime = None,
         compass_angle: float = None,
+        street_point_id: int = None,
     ) -> dict[str, Any]:
         """Save pipeline result to database with transaction safety."""
 
@@ -159,7 +163,7 @@ class DatabasePipeline(RoadAnalysisPipeline):
                     location=location,
                     date_taken=date_taken,
                     compass_angle=compass_angle,
-                    street_point_id=None,  # Phase 1: no street points yet
+                    street_point_id=street_point_id,  # Link to street point if available
                 )
 
                 # 2. Save quality assessment (always)
