@@ -2,7 +2,7 @@
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import requests
 from dotenv import load_dotenv
@@ -132,42 +132,6 @@ class OSNamesClient:
             "postcode": result.get("POSTCODE")
         }
 
-    def batch_lookup_street_metadata(
-        self, 
-        coordinates: List[Tuple[float, float]], 
-        radius: int = 100
-    ) -> List[Dict[str, Optional[str]]]:
-        """Look up street metadata for multiple BNG coordinates.
-        
-        Args:
-            coordinates: List of (easting, northing) tuples in BNG
-            radius: Search radius in meters
-            
-        Returns:
-            List of street metadata dictionaries
-        """
-        results = []
-        
-        for i, (easting, northing) in enumerate(coordinates):
-            logger.debug(f"Looking up street metadata {i+1}/{len(coordinates)}: BNG ({easting}, {northing})")
-            
-            try:
-                metadata = self.get_street_metadata(easting, northing, radius)
-                results.append(metadata)
-            except Exception as e:
-                logger.warning(f"Failed to lookup BNG coordinates ({easting}, {northing}): {e}")
-                results.append({
-                    "street_name": None,
-                    "local_authority": None,
-                    "region": None,
-                    "postcode": None
-                })
-            
-            # Rate limiting between requests
-            if i < len(coordinates) - 1:
-                time.sleep(self.RATE_LIMIT_DELAY)
-        
-        return results
 
     def _get_nearest_with_retry(
         self, 

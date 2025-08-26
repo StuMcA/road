@@ -336,8 +336,8 @@ class DatabasePipeline(RoadAnalysisPipeline):
 
     def process_all_street_points(
         self, 
-        radius_m: float = 8.0, 
-        images_per_point: int = 5,
+        radius_m: float = 1, 
+        images_per_point: int = 20,
         batch_size: int = 100,
         start_offset: int = 0
     ) -> dict[str, Any]:
