@@ -154,7 +154,6 @@ class DatabaseService:
         date_taken: datetime = None,
         compass_angle: float = None,
         street_point_id: int = None,
-        street_data_id: int = None,
     ) -> int:
         """
         Save photo metadata to database.
@@ -166,7 +165,6 @@ class DatabaseService:
             date_taken: When photo was captured
             compass_angle: Camera direction in degrees (0-360)
             street_point_id: Reference to street point (nullable in Phase 1)
-            street_data_id: Reference to street data entry (TOID-based)
 
         Returns:
             Photo ID
@@ -183,14 +181,14 @@ class DatabaseService:
             cursor.execute(
                 f"""
                 INSERT INTO photos (
-                    street_point_id, street_data_id, source, source_image_id,
+                    street_point_id, source, source_image_id,
                     location, date_taken, compass_angle
                 ) VALUES (
-                    %s, %s, %s, %s,
+                    %s, %s, %s,
                     {location_sql if location_sql else "NULL"}, %s, %s
                 ) RETURNING id
             """,
-                (street_point_id, street_data_id, source, source_image_id, date_taken, compass_angle),
+                (street_point_id, source, source_image_id, date_taken, compass_angle),
             )
 
             result = cursor.fetchone()
@@ -293,8 +291,18 @@ class DatabaseService:
                     return val.item()
                 return val
 
-            # Map surface type (if available in road_metrics)
-            surface_type = getattr(road_metrics, "surface_type", None)
+            # Map surface type to enum values
+            surface_type_map = {
+                "asphalt": "asphalt",
+                "concrete": "concrete", 
+                "cobblestone": "cobblestone",
+                "gravel": "gravel",
+                "dirt": "dirt",
+                "brick": "brick",
+                "other": "other"
+            }
+            raw_surface_type = getattr(road_metrics, "surface_type", "other")
+            surface_type = surface_type_map.get(str(raw_surface_type).lower(), "other")
 
             # Determine quality rating from overall score
             score = convert_numpy(road_metrics.overall_quality_score)
@@ -330,9 +338,9 @@ class DatabaseService:
                     convert_numpy(road_metrics.pothole_confidence),
                     convert_numpy(road_metrics.pothole_count),
                     convert_numpy(road_metrics.surface_roughness),
+                    surface_type,
                     convert_numpy(road_metrics.lane_marking_visibility),
                     convert_numpy(road_metrics.debris_score),
-                    surface_type,
                     road_metrics.weather_condition,
                     convert_numpy(road_metrics.assessment_confidence),
                     road_metrics.model_name,
@@ -432,3 +440,26 @@ class DatabaseService:
                     'last_road_analysis': result['last_road_analysis']
                 }
             return {}
+
+    def clear_tables(self, tables: list[str]) -> None:
+        """
+        Clear specified database tables.
+        
+        Args:
+            tables: List of table names to clear
+        """
+        valid_tables = {"quality_results", "road_analysis_results", "photos"}
+        tables_to_clear = [table for table in tables if table in valid_tables]
+        
+        if not tables_to_clear:
+            logger.warning("No valid tables specified for clearing")
+            return
+            
+        with self.transaction() as conn:
+            cursor = conn.cursor()
+            
+            for table in tables_to_clear:
+                cursor.execute(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE")
+                logger.info(f"Cleared table: {table}")
+                
+            logger.info(f"Successfully cleared tables: {', '.join(tables_to_clear)}")

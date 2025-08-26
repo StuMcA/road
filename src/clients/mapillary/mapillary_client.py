@@ -32,14 +32,19 @@ class MapillaryClient:
         Returns:
             List of image metadata dictionaries
         """
-        params = {"access_token": self.access_token, "fields": fields, "limit": limit}
-
         # Convert bbox from (min_lat, min_lon, max_lat, max_lon)
         # to Mapillary format: left,bottom,right,top (minLon,minLat,maxLon,maxLat)
         min_lat, min_lon, max_lat, max_lon = bbox
         mapillary_bbox = f"{min_lon},{min_lat},{max_lon},{max_lat}"
 
-        response = requests.get(f"{self.BASE_URL}?bbox={mapillary_bbox}", params=params, timeout=30)
+        params = {
+            "access_token": self.access_token, 
+            "fields": fields, 
+            "limit": limit,
+            "bbox": mapillary_bbox
+        }
+
+        response = requests.get(self.BASE_URL, params=params, timeout=30)
         response.raise_for_status()
         return response.json().get("data", [])
 

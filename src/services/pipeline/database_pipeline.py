@@ -42,19 +42,34 @@ class DatabasePipeline(RoadAnalysisPipeline):
 
     def _parse_mapillary_date(self, captured_at: Any) -> Optional[datetime]:
         """Parse Mapillary date which can be ISO string or timestamp."""
+        logger.debug(f"DEBUG: _parse_mapillary_date received: {captured_at} (type: {type(captured_at)})")
+        
         if not captured_at:
+            logger.debug(f"DEBUG: captured_at is falsy: {captured_at}")
             return None
 
         try:
             # Try parsing as ISO string first
             if isinstance(captured_at, str):
-                return datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+                result = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+                logger.debug(f"DEBUG: Parsed ISO string to: {result}")
+                return result
             # Try parsing as timestamp
             if isinstance(captured_at, (int, float)):
-                return datetime.fromtimestamp(captured_at)
+                # Check if timestamp is in milliseconds (common for Mapillary)
+                # Timestamps > 1e10 are likely milliseconds (after ~2001 in seconds)
+                if captured_at > 1e10:
+                    result = datetime.fromtimestamp(captured_at / 1000)
+                    logger.debug(f"DEBUG: Parsed millisecond timestamp to: {result}")
+                    return result
+                else:
+                    result = datetime.fromtimestamp(captured_at)
+                    logger.debug(f"DEBUG: Parsed second timestamp to: {result}")
+                    return result
+            logger.debug(f"DEBUG: Unsupported type for captured_at: {type(captured_at)}")
             return None
-        except (ValueError, TypeError):
-            logger.warning(f"Could not parse Mapillary date: {captured_at}")
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Could not parse Mapillary date: {captured_at}, error: {e}")
             return None
 
     def _validate_compass_angle(self, angle: Any) -> Optional[float]:
@@ -209,6 +224,7 @@ class DatabasePipeline(RoadAnalysisPipeline):
         radius_m: float = 100.0,
         limit: int = 5,
         output_dir: str = None,
+        street_point_id: Optional[int] = None,
     ) -> dict[str, Any]:
         """
         Process coordinate with image fetching and database integration.
@@ -219,6 +235,7 @@ class DatabasePipeline(RoadAnalysisPipeline):
             radius_m: Search radius in meters
             limit: Maximum images to fetch
             output_dir: Directory to save images
+            street_point_id: Optional street point ID to link photos to
 
         Returns:
             Processing results with database integration
@@ -260,6 +277,12 @@ class DatabasePipeline(RoadAnalysisPipeline):
             for i, image_path in enumerate(image_paths):
                 # Get corresponding metadata (if available)
                 mapillary_data = image_metadata_list[i] if i < len(image_metadata_list) else {}
+                
+                # DEBUG: Log what mapillary_data contains
+                logger.debug(f"DEBUG: Processing image {i}: {image_path}")
+                logger.debug(f"DEBUG: mapillary_data keys: {list(mapillary_data.keys()) if mapillary_data else 'EMPTY'}")
+                if mapillary_data:
+                    logger.debug(f"DEBUG: captured_at value: {mapillary_data.get('captured_at')} (type: {type(mapillary_data.get('captured_at'))})")
 
                 result = self.process_image_with_db(
                     image_path=image_path,
@@ -277,6 +300,7 @@ class DatabasePipeline(RoadAnalysisPipeline):
                     else None,
                     date_taken=self._parse_mapillary_date(mapillary_data.get("captured_at")),
                     compass_angle=self._validate_compass_angle(mapillary_data.get("compass_angle")),
+                    street_point_id=street_point_id,
                 )
 
                 processed_images.append(result)
@@ -309,6 +333,128 @@ class DatabasePipeline(RoadAnalysisPipeline):
         except Exception as e:
             logger.error(f"Error processing coordinate {lat}, {lon}: {e}")
             return {"error": str(e), "success": False, "coordinates": (lat, lon)}
+
+    def process_all_street_points(
+        self, 
+        radius_m: float = 8.0, 
+        images_per_point: int = 5,
+        batch_size: int = 100,
+        start_offset: int = 0
+    ) -> dict[str, Any]:
+        """
+        Process all street points in the database with image analysis.
+        
+        Args:
+            radius_m: Search radius in meters for images around each point
+            images_per_point: Maximum images to fetch per street point
+            batch_size: Number of street points to process in each batch
+            start_offset: Offset to start processing from (for resuming)
+            
+        Returns:
+            Processing summary with statistics
+        """
+        import time
+        
+        if not self.fetcher_service:
+            raise ValueError("Fetcher service not enabled. Initialize with enable_fetcher=True")
+            
+        logger.info(f"Starting full street points analysis with {radius_m}m radius, {images_per_point} images per point")
+        
+        # Get total count
+        with self.db_service.transaction() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) as total FROM street_points')
+            total_count = cursor.fetchone()['total']
+        
+        logger.info(f'Processing {total_count:,} street points in batches of {batch_size}')
+        start_time = time.time()
+        
+        # Initialize counters
+        processed_points = 0
+        total_images_found = 0
+        total_images_saved = 0
+        total_duplicates = 0
+        total_errors = 0
+        
+        # Process in batches
+        for offset in range(start_offset, total_count, batch_size):
+            batch_start_time = time.time()
+            
+            # Get batch of street points
+            with self.db_service.transaction() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT id, ST_X(location) as latitude, ST_Y(location) as longitude 
+                    FROM street_points 
+                    ORDER BY id 
+                    LIMIT %s OFFSET %s
+                ''', (batch_size, offset))
+                
+                batch_points = cursor.fetchall()
+            
+            # Process each point in the batch
+            for point in batch_points:
+                street_point_id = point['id']
+                lat, lon = point['latitude'], point['longitude']
+                
+                try:
+                    result = self.process_coordinate_with_db(
+                        lat=lat, 
+                        lon=lon, 
+                        radius_m=radius_m, 
+                        limit=images_per_point, 
+                        street_point_id=street_point_id
+                    )
+                    
+                    # Update counters
+                    total_images_found += result['fetch_result']['images_found']
+                    total_images_saved += result['summary']['successful_database_saves']
+                    total_duplicates += result['summary']['duplicates_found']
+                    processed_points += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error processing street point {street_point_id}: {e}")
+                    total_errors += 1
+                    continue
+            
+            # Progress reporting
+            batch_time = time.time() - batch_start_time
+            elapsed_total = time.time() - start_time
+            
+            if processed_points > 0:
+                rate_per_min = processed_points / elapsed_total * 60
+                eta_minutes = (total_count - processed_points - start_offset) / rate_per_min if rate_per_min > 0 else 0
+                
+                logger.info(
+                    f"Batch complete: {processed_points + start_offset:,}/{total_count:,} "
+                    f"({(processed_points + start_offset)/total_count*100:.1f}%) - "
+                    f"Images found: {total_images_found:,}, Saved: {total_images_saved:,}, "
+                    f"Duplicates: {total_duplicates:,}, Errors: {total_errors:,} - "
+                    f"Rate: {rate_per_min:.1f}/min, ETA: {eta_minutes:.0f}min"
+                )
+        
+        # Final summary
+        total_time = time.time() - start_time
+        logger.info(
+            f"Street points analysis complete! Processed {processed_points:,} points in {total_time/60:.1f} minutes. "
+            f"Found {total_images_found:,} images, saved {total_images_saved:,} to database."
+        )
+        
+        return {
+            "total_points_processed": processed_points,
+            "total_images_found": total_images_found,
+            "total_images_saved": total_images_saved,
+            "total_duplicates": total_duplicates,
+            "total_errors": total_errors,
+            "processing_time_minutes": total_time / 60,
+            "average_rate_per_minute": processed_points / (total_time / 60) if total_time > 0 else 0,
+            "parameters": {
+                "radius_m": radius_m,
+                "images_per_point": images_per_point,
+                "batch_size": batch_size,
+                "start_offset": start_offset
+            }
+        }
 
     def get_database_stats(self) -> dict[str, Any]:
         """Get database processing statistics."""
