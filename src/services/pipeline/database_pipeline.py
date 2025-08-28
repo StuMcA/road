@@ -395,7 +395,7 @@ class DatabasePipeline(RoadAnalysisPipeline):
             # Process each point in the batch
             for point in batch_points:
                 street_point_id = point['id']
-                lat, lon = point['latitude'], point['longitude']
+                lon, lat = point['longitude'], point['latitude']
                 
                 try:
                     result = self.process_coordinate_with_db(
