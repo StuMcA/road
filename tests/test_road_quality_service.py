@@ -231,9 +231,10 @@ class TestYOLOv8RoadModel(unittest.TestCase):
         """Test model loading failure handling."""
         mock_yolo.side_effect = Exception("Model loading failed")
         
-        success = self.model.load_model()
+        with self.assertRaises(RuntimeError) as context:
+            self.model.load_model()
         
-        self.assertFalse(success)
+        self.assertIn("Failed to load YOLOv8 model", str(context.exception))
         self.assertFalse(self.model.is_loaded)
     
     def test_predict_without_loaded_model(self):
