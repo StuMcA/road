@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
 
-from ..image_quality import ImageQualityMetrics
-from ..road_quality import RoadQualityMetrics
+from ..image.quality.quality_metrics import ImageQualityMetrics
+from ..road.analysis.metrics import RoadQualityMetrics
 
 
 @dataclass

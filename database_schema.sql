@@ -51,6 +51,9 @@ CREATE TYPE crack_severity AS ENUM (
 CREATE TABLE streets (
     id SERIAL PRIMARY KEY,
     street_name VARCHAR(255) NOT NULL,
+    postcode VARCHAR(20),
+    local_authority VARCHAR(255),
+    accessibility accessibility_type DEFAULT 'unknown',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -59,9 +62,6 @@ CREATE TABLE street_points (
     id SERIAL PRIMARY KEY,
     street_id INTEGER REFERENCES streets(id) ON DELETE CASCADE,
     location GEOMETRY(POINT, 4326) NOT NULL, -- WGS84 lat/lon
-    postcode VARCHAR(20),
-    local_authority VARCHAR(255),
-    region VARCHAR(255),
     description TEXT, -- Optional description of this point
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -180,15 +180,12 @@ ALTER TABLE quality_results ADD CONSTRAINT unique_quality_per_photo UNIQUE (phot
 ALTER TABLE road_analysis_results ADD CONSTRAINT unique_analysis_per_photo UNIQUE (photo_id);
 
 -- Create indexes for performance
--- Streets indexes  
-CREATE INDEX idx_streets_name ON streets(street_name);
-CREATE INDEX idx_streets_created_at ON streets(created_at);
+-- Streets indexes
+CREATE INDEX idx_streets_postcode ON streets(postcode);
+CREATE INDEX idx_streets_local_authority ON streets(local_authority);
 
 -- Street points indexes
-CREATE INDEX idx_street_points_street_id ON street_points(street_id);
 CREATE INDEX idx_street_points_location ON street_points USING GIST(location);
-CREATE INDEX idx_street_points_postcode ON street_points(postcode);
-CREATE INDEX idx_street_points_local_authority ON street_points(local_authority);
 
 -- Photos indexes
 CREATE INDEX idx_photos_street_point ON photos(street_point_id);
@@ -230,8 +227,8 @@ SELECT
     
     -- Street information (nullable in Phase 1)
     s.street_name,
-    sp.postcode,
-    sp.local_authority,
+    s.postcode,
+    s.local_authority,
     
     -- Quality assessment
     q.overall_score as quality_score,
@@ -254,6 +251,36 @@ LEFT JOIN street_points sp ON p.street_point_id = sp.id  -- LEFT JOIN for nullab
 LEFT JOIN streets s ON sp.street_id = s.id
 LEFT JOIN quality_results q ON p.id = q.photo_id
 LEFT JOIN road_analysis_results r ON p.id = r.photo_id;
+
+-- Street quality summary view (handles cases where streets may not have photos yet)
+CREATE VIEW street_quality_summary AS
+SELECT 
+    s.id as street_id,
+    s.street_name,
+    s.postcode,
+    s.local_authority,
+    
+    COUNT(p.id) as total_photos,
+    COUNT(r.id) as analyzed_photos,
+    
+    -- Quality metrics
+    AVG(q.overall_score) as avg_quality_score,
+    AVG(r.overall_quality_score) as avg_road_quality_score,
+    
+    -- Issue statistics
+    AVG(r.crack_confidence) as avg_crack_confidence,
+    AVG(r.pothole_confidence) as avg_pothole_confidence,
+    SUM(r.pothole_count) as total_potholes,
+    
+    -- Most recent analysis
+    MAX(r.date_calculated) as last_analyzed
+    
+FROM streets s
+LEFT JOIN street_points sp ON s.id = sp.street_id
+LEFT JOIN photos p ON sp.id = p.street_point_id
+LEFT JOIN quality_results q ON p.id = q.photo_id
+LEFT JOIN road_analysis_results r ON p.id = r.photo_id
+GROUP BY s.id, s.street_name, s.postcode, s.local_authority;
 
 -- Comments for documentation
 COMMENT ON TABLE streets IS 'Administrative grouping of road segments';

@@ -19,8 +19,8 @@ import psycopg2
 from dotenv import load_dotenv
 from psycopg2.extras import RealDictCursor
 
-from ..services.image_quality import ImageQualityMetrics
-from ..services.road_quality import RoadQualityMetrics
+from ...services.image.quality.quality_metrics import ImageQualityMetrics
+from ...services.road.analysis.metrics import RoadQualityMetrics
 
 
 load_dotenv()
@@ -212,6 +212,14 @@ class DatabaseService:
         with self.transaction() as conn:
             cursor = conn.cursor()
 
+            # Convert numpy types to Python native types for database compatibility
+            def convert_numpy(val):
+                """Convert numpy types to native Python types"""
+                import numpy as np
+                if isinstance(val, (np.integer, np.floating)):
+                    return val.item()
+                return val
+
             # Convert failure reasons enum to strings
             failure_reasons = (
                 [reason.value for reason in quality_metrics.failure_reasons]
@@ -231,11 +239,11 @@ class DatabaseService:
             """,
                 (
                     photo_id,
-                    quality_metrics.overall_score,
-                    quality_metrics.blur_score,
-                    quality_metrics.exposure_score,
-                    quality_metrics.size_score,
-                    quality_metrics.road_surface_percentage,
+                    convert_numpy(quality_metrics.overall_score),
+                    convert_numpy(quality_metrics.blur_score),
+                    convert_numpy(quality_metrics.exposure_score),
+                    convert_numpy(quality_metrics.size_score),
+                    convert_numpy(quality_metrics.road_surface_percentage),
                     quality_metrics.has_sufficient_road,
                     quality_metrics.is_usable,
                     failure_reasons,
@@ -275,11 +283,29 @@ class DatabaseService:
             }
             crack_severity = crack_severity_map.get(road_metrics.crack_severity, "none")
 
-            # Map surface type (if available in road_metrics)
-            surface_type = getattr(road_metrics, "surface_type", None)
+            # Convert numpy types to Python native types for database compatibility
+            def convert_numpy(val):
+                """Convert numpy types to native Python types"""
+                import numpy as np
+                if isinstance(val, (np.integer, np.floating)):
+                    return val.item()
+                return val
+
+            # Map surface type to enum values
+            surface_type_map = {
+                "asphalt": "asphalt",
+                "concrete": "concrete", 
+                "cobblestone": "cobblestone",
+                "gravel": "gravel",
+                "dirt": "dirt",
+                "brick": "brick",
+                "other": "other"
+            }
+            raw_surface_type = getattr(road_metrics, "surface_type", "other")
+            surface_type = surface_type_map.get(str(raw_surface_type).lower(), "other")
 
             # Determine quality rating from overall score
-            score = road_metrics.overall_quality_score
+            score = convert_numpy(road_metrics.overall_quality_score)
             if score >= 90:
                 quality_rating = "excellent"
             elif score >= 75:
@@ -305,18 +331,18 @@ class DatabaseService:
             """,
                 (
                     photo_id,
-                    road_metrics.overall_quality_score,
+                    convert_numpy(road_metrics.overall_quality_score),
                     quality_rating,
-                    road_metrics.crack_confidence,
+                    convert_numpy(road_metrics.crack_confidence),
                     crack_severity,
-                    road_metrics.pothole_confidence,
-                    road_metrics.pothole_count,
-                    road_metrics.surface_roughness,
+                    convert_numpy(road_metrics.pothole_confidence),
+                    convert_numpy(road_metrics.pothole_count),
+                    convert_numpy(road_metrics.surface_roughness),
                     surface_type,
-                    road_metrics.lane_marking_visibility,
-                    road_metrics.debris_score,
+                    convert_numpy(road_metrics.lane_marking_visibility),
+                    convert_numpy(road_metrics.debris_score),
                     road_metrics.weather_condition,
-                    road_metrics.assessment_confidence,
+                    convert_numpy(road_metrics.assessment_confidence),
                     road_metrics.model_name,
                     road_metrics.model_version,
                 ),
@@ -414,3 +440,26 @@ class DatabaseService:
                     'last_road_analysis': result['last_road_analysis']
                 }
             return {}
+
+    def clear_tables(self, tables: list[str]) -> None:
+        """
+        Clear specified database tables.
+        
+        Args:
+            tables: List of table names to clear
+        """
+        valid_tables = {"quality_results", "road_analysis_results", "photos"}
+        tables_to_clear = [table for table in tables if table in valid_tables]
+        
+        if not tables_to_clear:
+            logger.warning("No valid tables specified for clearing")
+            return
+            
+        with self.transaction() as conn:
+            cursor = conn.cursor()
+            
+            for table in tables_to_clear:
+                cursor.execute(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE")
+                logger.info(f"Cleared table: {table}")
+                
+            logger.info(f"Successfully cleared tables: {', '.join(tables_to_clear)}")

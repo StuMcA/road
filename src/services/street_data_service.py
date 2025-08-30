@@ -1,0 +1,515 @@
+"""
+Street Data Service
+
+Consolidated service that utilizes both OS clients to construct a comprehensive
+dataset of street sections with coordinates and metadata for database storage.
+
+This service replaces:
+- toid_metadata_service
+- street_pipeline_service  
+- road_sections_service
+- Coordinate fetching aspects of toid_analysis_pipeline
+"""
+
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+import time
+import threading
+
+from ..clients.ordnance_survey.os_features_client import OSFeaturesClient
+from ..clients.ordnance_survey.os_names_client import OSNamesClient
+from ..database.services.database_service import DatabaseService
+
+
+logger = logging.getLogger(__name__)
+
+
+class RateLimiter:
+    """Thread-safe rate limiter for API calls."""
+    
+    def __init__(self, max_requests_per_minute: int = 600):
+        self.max_requests = max_requests_per_minute
+        self.requests_times = []
+        self.lock = threading.Lock()
+    
+    def wait_if_needed(self):
+        """Wait if necessary to respect rate limits."""
+        with self.lock:
+            now = time.time()
+            # Remove requests older than 1 minute
+            self.requests_times = [t for t in self.requests_times if now - t < 60]
+            
+            if len(self.requests_times) >= self.max_requests:
+                # Calculate wait time
+                oldest_request = min(self.requests_times)
+                wait_time = 60 - (now - oldest_request) + 0.1  # Small buffer
+                if wait_time > 0:
+                    logger.debug(f"Rate limit reached, waiting {wait_time:.2f} seconds")
+                    time.sleep(wait_time)
+                    # Clean up again after waiting
+                    now = time.time()
+                    self.requests_times = [t for t in self.requests_times if now - t < 60]
+            
+            self.requests_times.append(now)
+
+
+class StreetDataService:
+    """
+    Unified service for comprehensive street data collection and storage.
+    
+    Workflow:
+    1. Fetch TOIDs and coordinates from OS Features API
+    2. Enrich with street metadata from OS Names API
+    3. Save comprehensive dataset to database
+    """
+    
+    def __init__(self):
+        """Initialize the street data service with both OS clients and database."""
+        self.features_client = OSFeaturesClient()
+        self.names_client = OSNamesClient()
+        self.db_service = DatabaseService()
+        self.rate_limiter = RateLimiter(max_requests_per_minute=600)  # OS API fair use limit
+        
+        self.version = "1.0.0"
+        
+        # Ensure database schema is set up on initialization
+        try:
+            self._ensure_street_points_data()
+        except Exception as e:
+            logger.warning(f"Could not ensure street_points table setup on init: {e}")
+            
+        logger.info("StreetDataService initialized")
+    
+    def collect_street_data(
+        self, 
+        bbox: List[float], 
+        max_features: Optional[int] = None,
+        metadata_radius_m: int = 100
+    ) -> Dict[str, Any]:
+        """
+        Collect comprehensive street data for an area.
+        
+        Args:
+            bbox: Bounding box as [min_lon, min_lat, max_lon, max_lat]
+            max_features: Optional limit on number of TOIDs to process
+            metadata_radius_m: Search radius in meters for street metadata
+            
+        Returns:
+            Collection results with statistics and data
+        """
+        start_time = datetime.now()
+        logger.info(f"Starting street data collection for bbox: {bbox}")
+        
+        results = {
+            "success": False,
+            "bbox": bbox,
+            "start_time": start_time.isoformat(),
+            "features_fetched": 0,
+            "features_with_metadata": 0,
+            "features_saved": 0,
+            "processing_errors": [],
+            "metadata": {
+                "service_version": self.version,
+                "metadata_radius_m": metadata_radius_m
+            }
+        }
+        
+        try:
+            # Step 1: Fetch TOID features from OS Features API
+            logger.info("Fetching TOID features from OS Features API...")
+            toid_features = self.features_client.fetch_all_toid_features(
+                bbox=bbox,
+                max_features=max_features
+            )
+            
+            results["features_fetched"] = len(toid_features)
+            logger.info(f"Fetched {len(toid_features)} TOID features")
+            
+            if not toid_features:
+                logger.warning("No TOID features found in specified area")
+                results["success"] = True
+                results["end_time"] = datetime.now().isoformat()
+                return results
+            
+            # Step 2: Enrich with street metadata from OS Names API and save in batches
+            logger.info("Enriching features with street metadata and saving in batches...")
+            saved_count = self._enrich_with_metadata(
+                toid_features, metadata_radius_m, results
+            )
+            results["features_saved"] = saved_count
+            
+            # Calculate features with metadata from database
+            # (We'll count this from the database since features are saved as we go)
+            try:
+                with self.db_service.transaction() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT COUNT(*) as count_with_metadata
+                        FROM street_points sp
+                        WHERE sp.toid IS NOT NULL 
+                        AND (sp.local_authority IS NOT NULL 
+                             OR sp.postcode IS NOT NULL
+                             OR sp.region IS NOT NULL)
+                    """)
+                    result = cursor.fetchone()
+                    results["features_with_metadata"] = result["count_with_metadata"] if result else 0
+            except Exception as e:
+                logger.warning(f"Could not count features with metadata: {e}")
+                results["features_with_metadata"] = 0
+            
+            # Finalize results
+            results["success"] = True
+            results["end_time"] = datetime.now().isoformat()
+            
+            processing_time = (datetime.now() - start_time).total_seconds()
+            results["processing_time_seconds"] = processing_time
+            
+            logger.info(
+                f"Street data collection completed: {saved_count}/{len(toid_features)} "
+                f"features saved with {results['features_with_metadata']} having metadata"
+            )
+            
+        except Exception as e:
+            error_msg = f"Street data collection failed: {e}"
+            logger.error(error_msg)
+            results["processing_errors"].append({
+                "error": error_msg,
+                "timestamp": datetime.now().isoformat()
+            })
+            results["end_time"] = datetime.now().isoformat()
+        
+        return results
+    
+    def _process_single_feature_metadata(self, feature_tuple: Tuple, radius_m: int) -> Dict[str, Any]:
+        """Process a single feature for metadata enrichment (thread-safe)."""
+        # Unpack feature data - handle both 6 and 8 element tuples
+        if len(feature_tuple) == 8:
+            toid, version_date, source_product, geom_wkt, longitude, latitude, easting, northing = feature_tuple
+        else:
+            # Fallback for 6-element tuples (missing easting/northing)
+            toid, version_date, source_product, geom_wkt, longitude, latitude = feature_tuple
+            easting, northing = None, None
+        
+        # Create base feature data
+        feature_data = {
+            "toid": toid,
+            "version_date": version_date,
+            "source_product": source_product,
+            "geometry_wkt": geom_wkt,
+            "longitude": longitude,
+            "latitude": latitude,
+            "easting": easting,
+            "northing": northing,
+            "street_name": None,
+            "local_authority": None,
+            "region": None,
+            "postcode": None,
+            "metadata_success": False,
+            "metadata_error": None
+        }
+        
+        # Try to get street metadata if we have BNG coordinates
+        if easting and northing:
+            try:
+                # Rate limiting for API calls
+                self.rate_limiter.wait_if_needed()
+                
+                street_metadata = self.names_client.get_street_metadata(
+                    easting=easting,
+                    northing=northing,
+                    radius=radius_m
+                )
+                
+                # Update feature with metadata
+                feature_data.update({
+                    "street_name": street_metadata.get("street_name"),
+                    "local_authority": street_metadata.get("local_authority"),
+                    "region": street_metadata.get("region"),
+                    "postcode": street_metadata.get("postcode")
+                })
+                
+                if any(street_metadata.values()):
+                    feature_data["metadata_success"] = True
+                    logger.debug(f"Found metadata for TOID {toid}")
+                
+            except Exception as e:
+                feature_data["metadata_error"] = f"Failed to get metadata for TOID {toid}: {e}"
+                logger.warning(feature_data["metadata_error"])
+        else:
+            logger.debug(f"No BNG coordinates available for TOID {toid}, skipping metadata lookup")
+        
+        return feature_data
+    
+    def _enrich_with_metadata(
+        self, 
+        toid_features: List[Tuple], 
+        radius_m: int,
+        results: Dict[str, Any],
+        max_workers: int = 10,
+        batch_size: int = 50
+    ) -> int:
+        """
+        Enrich TOID features with street metadata from OS Names API using multithreading.
+        Features are saved to database in batches as they're processed to minimize memory usage.
+        
+        Args:
+            toid_features: List of TOID feature tuples from Features API
+            radius_m: Search radius in meters for metadata
+            results: Results dictionary to update with errors
+            max_workers: Maximum number of concurrent threads
+            batch_size: Number of features to save per database batch
+            
+        Returns:
+            Number of features successfully saved to database
+        """
+        total_features = len(toid_features)
+        completed = 0
+        saved_count = 0
+        batch = []
+        
+        logger.info(f"Starting multithreaded metadata enrichment with {max_workers} workers, batch size {batch_size}")
+        
+        # Ensure database is ready
+        try:
+            self._ensure_street_points_data()
+        except Exception as e:
+            error_msg = f"Failed to ensure street_points table: {e}"
+            logger.error(error_msg)
+            results["processing_errors"].append({
+                "error": error_msg,
+                "timestamp": datetime.now().isoformat()
+            })
+            return 0
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_index = {
+                executor.submit(self._process_single_feature_metadata, feature_tuple, radius_m): i
+                for i, feature_tuple in enumerate(toid_features)
+            }
+            
+            # Process completed tasks
+            for future in as_completed(future_to_index):
+                try:
+                    feature_data = future.result()
+                    
+                    # Handle metadata errors
+                    if feature_data.get("metadata_error"):
+                        results["processing_errors"].append({
+                            "toid": feature_data["toid"],
+                            "error": feature_data["metadata_error"],
+                            "timestamp": datetime.now().isoformat()
+                        })
+                    
+                    # Add to batch
+                    batch.append(feature_data)
+                    completed += 1
+                    
+                    # Save batch when full
+                    if len(batch) >= batch_size:
+                        batch_saved = self._save_street_data(batch, results)
+                        saved_count += batch_saved
+                        batch.clear()
+                        
+                        logger.info(f"Processed {completed}/{total_features} features for metadata, saved {saved_count} total")
+                    
+                    # Progress update for partial batches
+                    elif completed % 50 == 0:
+                        logger.info(f"Processed {completed}/{total_features} features for metadata")
+                        
+                except Exception as e:
+                    index = future_to_index[future]
+                    toid = toid_features[index][0] if len(toid_features[index]) > 0 else "unknown"
+                    error_msg = f"Failed to process feature {toid}: {e}"
+                    logger.warning(error_msg)
+                    results["processing_errors"].append({
+                        "toid": toid,
+                        "error": error_msg,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    completed += 1
+            
+            # Save any remaining features in the final batch
+            if batch:
+                batch_saved = self._save_street_data(batch, results)
+                saved_count += batch_saved
+                logger.info(f"Final batch: saved {batch_saved} features, total saved: {saved_count}")
+        
+        logger.info(f"Metadata enrichment completed: {saved_count}/{total_features} features saved to database")
+        return saved_count
+    
+    def _save_street_data(
+        self, 
+        features: List[Dict[str, Any]], 
+        results: Dict[str, Any]
+    ) -> int:
+        """
+        Save enriched street data to database.
+        
+        Args:
+            features: List of enriched feature dictionaries
+            results: Results dictionary to update with errors
+            
+        Returns:
+            Number of features successfully saved
+        """
+        saved_count = 0
+        
+        # Ensure street_points table is properly set up
+        try:
+            self._ensure_street_points_data()
+        except Exception as e:
+            error_msg = f"Failed to ensure street_points table: {e}"
+            logger.error(error_msg)
+            results["processing_errors"].append({
+                "error": error_msg,
+                "timestamp": datetime.now().isoformat()
+            })
+            return saved_count
+        
+        # Save individual features
+        for feature in features:
+            try:
+                with self.db_service.transaction() as conn:
+                    cursor = conn.cursor()
+                    
+                    # First, ensure the street exists or create it
+                    street_name = feature["street_name"] or "Unknown Street"
+                    
+                    # Try to get existing street first
+                    cursor.execute("SELECT id FROM streets WHERE street_name = %s", (street_name,))
+                    street_result = cursor.fetchone()
+                    
+                    if street_result:
+                        street_id = street_result['id']
+                    else:
+                        # Street doesn't exist, create it
+                        cursor.execute("""
+                            INSERT INTO streets (street_name) 
+                            VALUES (%s)
+                            RETURNING id
+                        """, (street_name,))
+                        street_id = cursor.fetchone()['id']
+                    
+                    # Insert into street_points with TOID data
+                    cursor.execute("""
+                        INSERT INTO street_points (
+                            street_id, location, postcode, local_authority, region,
+                            toid, version_date, source_product, easting, northing
+                        )
+                        VALUES (
+                            %s, ST_MakePoint(%s, %s), %s, %s, %s,
+                            %s, %s, %s, %s, %s
+                        )
+                        ON CONFLICT (toid) DO UPDATE SET
+                            street_id = EXCLUDED.street_id,
+                            location = EXCLUDED.location,
+                            postcode = EXCLUDED.postcode,
+                            local_authority = EXCLUDED.local_authority,
+                            region = EXCLUDED.region,
+                            version_date = EXCLUDED.version_date,
+                            source_product = EXCLUDED.source_product,
+                            easting = EXCLUDED.easting,
+                            northing = EXCLUDED.northing
+                    """, (
+                        street_id,
+                        feature["longitude"],
+                        feature["latitude"],
+                        feature["postcode"],
+                        feature["local_authority"],
+                        feature["region"],
+                        feature["toid"],
+                        feature["version_date"],
+                        feature["source_product"],
+                        feature["easting"],
+                        feature["northing"]
+                    ))
+                    
+                    if cursor.rowcount > 0:
+                        saved_count += 1
+                        
+            except Exception as e:
+                import traceback
+                full_error = traceback.format_exc()
+                error_msg = f"Failed to save feature {feature['toid']}: {type(e).__name__}: {e}"
+                logger.warning(f"{error_msg}\nFull traceback: {full_error}")
+                results["processing_errors"].append({
+                    "toid": feature["toid"],
+                    "error": error_msg,
+                    "full_error": full_error,
+                    "timestamp": datetime.now().isoformat()
+                })
+                continue
+        
+        logger.info(f"Saved {saved_count}/{len(features)} features to database")
+        return saved_count
+    
+    def _ensure_street_points_data(self):
+        """Ensure the streets and street_points tables are properly set up."""
+        with self.db_service.transaction() as conn:
+            cursor = conn.cursor()
+            
+            # Add toid column to street_points if it doesn't exist
+            cursor.execute("""
+                DO $$ 
+                BEGIN
+                    -- Check if toid column exists in street_points
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'street_points' AND column_name = 'toid'
+                    ) THEN
+                        ALTER TABLE street_points ADD COLUMN toid VARCHAR(36) UNIQUE;
+                    END IF;
+                    
+                    -- Check if version_date column exists
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'street_points' AND column_name = 'version_date'
+                    ) THEN
+                        ALTER TABLE street_points ADD COLUMN version_date DATE;
+                    END IF;
+                    
+                    -- Check if source_product column exists
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'street_points' AND column_name = 'source_product'
+                    ) THEN
+                        ALTER TABLE street_points ADD COLUMN source_product VARCHAR(100);
+                    END IF;
+                    
+                    -- Check if easting/northing columns exist
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'street_points' AND column_name = 'easting'
+                    ) THEN
+                        ALTER TABLE street_points ADD COLUMN easting INTEGER;
+                    END IF;
+                    
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'street_points' AND column_name = 'northing'
+                    ) THEN
+                        ALTER TABLE street_points ADD COLUMN northing INTEGER;
+                    END IF;
+                END $$;
+            """)
+            
+            # Create indexes for efficient querying
+            cursor.execute("""
+                DO $$ 
+                BEGIN
+                    -- Index on TOID for fast lookups
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_indexes 
+                        WHERE tablename = 'street_points' AND indexname = 'idx_street_points_toid'
+                    ) THEN
+                        CREATE INDEX idx_street_points_toid ON street_points(toid);
+                    END IF;
+                END $$;
+            """)
+    
+    
+    
+    

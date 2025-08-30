@@ -28,3 +28,5 @@ Thumbs.db
 
 # Test results
 edinburgh_road_analysis
+
+*.log

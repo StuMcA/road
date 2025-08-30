@@ -318,13 +318,13 @@ class DatabaseInitializer:
         logger.info("Starting database reset...")
 
         # Option 1: Drop entire database and recreate
-        # self.drop_database()
-        # self.init_fresh_database()
+        self.drop_database()
+        self.init_fresh_database()
 
         # Option 2: Drop only schema objects (faster, preserves database)
-        self.create_database()  # Ensure database exists
-        self.drop_all_schema_objects()
-        self.run_schema_file()
+        # self.create_database()  # Ensure database exists
+        # self.drop_all_schema_objects()
+        # self.run_schema_file()
 
         # Validate
         if self.validate_schema():
