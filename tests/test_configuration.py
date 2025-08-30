@@ -42,33 +42,6 @@ def test_default_config():
             print(f"  Failures: {[r.value for r in result.failure_reasons]}")
 
 
-def test_lenient_config():
-    """Test with more lenient configuration for testing"""
-    print("\n🔧 Testing Lenient Configuration (for testing)")
-    print("=" * 40)
-    
-    config = QualityConfig.for_testing()
-    service = ImageQualityService(config)
-    
-    print(f"Testing Settings (more lenient):")
-    print(f"  Blur threshold: {config.blur_threshold}")
-    print(f"  Min road surface: {config.min_road_surface_percentage}%")
-    print(f"  Dark threshold: {config.dark_threshold}")
-    print(f"  Bright threshold: {config.bright_threshold}")
-    
-    # Test with sample image
-    sample_dir = Path("../mapillary_images")
-    image_files = list(sample_dir.glob("*.png"))
-    
-    if image_files:
-        result = service.evaluate(str(image_files[0]))
-        print(f"\nResult with lenient config:")
-        print(f"  Overall score: {result.overall_score:.1f}/100")
-        print(f"  Usable: {result.is_usable}")
-        if result.failure_reasons:
-            print(f"  Failures: {[r.value for r in result.failure_reasons]}")
-
-
 def test_env_config():
     """Test configuration from environment variables"""
     print("\n🔧 Testing Environment Variable Configuration")
@@ -156,8 +129,7 @@ def test_config_comparison():
     configs = {
         "Strict": QualityConfig(blur_threshold=100.0, min_road_surface_percentage=30.0),
         "Default": QualityConfig(),
-        "Lenient": QualityConfig.for_testing(),
-        "Very Lenient": QualityConfig(blur_threshold=10.0, min_road_surface_percentage=5.0)
+        "Lenient": QualityConfig(blur_threshold=10.0, min_road_surface_percentage=5.0)
     }
     
     print(f"Testing image: {image_files[0].name}")
@@ -178,7 +150,6 @@ def main():
     print("=" * 50)
     
     test_default_config()
-    test_lenient_config()
     test_env_config()
     test_custom_config()
     test_config_comparison()

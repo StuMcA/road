@@ -49,16 +49,6 @@ class QualityConfig:
             min_road_surface_percentage=float(os.getenv("MIN_ROAD_SURFACE", "25.0")),
         )
     
-    @classmethod
-    def for_testing(cls) -> "QualityConfig":
-        """Create relaxed config for testing with lower-quality samples"""
-        return cls(
-            blur_threshold=30.0,  # More lenient for test images
-            min_road_surface_percentage=15.0,  # Lower requirement for samples
-            dark_threshold=0.3,  # More lenient exposure
-            bright_threshold=0.9
-        )
-    
     def validate(self) -> None:
         """Validate configuration parameters"""
         if self.blur_threshold <= 0:
