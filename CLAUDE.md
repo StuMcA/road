@@ -8,7 +8,7 @@
 - **Docstrings**: Include docstrings for all public methods and classes
 
 ## Code Styling
-- **Newlines**: Files should end with exactly one newline character (only add if missing, don't add extra)
+- **Newlines**: Always end files with exactly one empty newline (no whitespace on the last line) Do not add a newline if there already is one!
 - **Line length**: Keep lines under 100 characters when possible
 - **Indentation**: Use 4 spaces (no tabs)
 - **Blank lines**: 
