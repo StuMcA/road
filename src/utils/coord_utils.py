@@ -1,20 +1,23 @@
 import math
 
-def bbox_from_point(lat, lon, half_side_m):
+
+def bbox_from_point(
+    lat: float, lon: float, half_side_m: float
+) -> tuple[float, float, float, float]:
     """
     Calculate a bounding box centred at (lat, lon) with half-side in metres.
-    
+
     Parameters:
         lat (float): Latitude in degrees
         lon (float): Longitude in degrees
         half_side_m (float): Half the width/height of the bounding box in metres
-        
+
     Returns:
         (min_lat, min_lon, max_lat, max_lon) in degrees
     """
     # Earth radius in metres
-    R = 6378137.0  
-    
+    R = 6378137.0
+
     # Convert to radians
     lat_rad = math.radians(lat)
     lon_rad = math.radians(lon)
@@ -31,4 +34,3 @@ def bbox_from_point(lat, lon, half_side_m):
     max_lon = math.degrees(lon_rad + dlon)
 
     return min_lat, min_lon, max_lat, max_lon
-

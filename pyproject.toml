@@ -1,7 +1,85 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "road"
+name = "road-quality-analysis"
 version = "0.1.0"
-description = "Add your description here"
+description = "Road quality analysis using street-level imagery and computer vision"
 readme = "README.md"
-requires-python = ">=3.13"
-dependencies = []
+requires-python = ">=3.9"
+authors = [
+    {name = "Road Quality Team"}
+]
+dependencies = [
+    "opencv-python",
+    "numpy",
+    "ultralytics",
+    "psycopg2-binary",
+    "python-dotenv",
+    "requests",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+extend-exclude = [
+    "__pycache__",
+    ".pytest_cache",
+    ".venv",
+    "venv",
+    "*.egg-info",
+    "build",
+    "dist",
+    "*.pt",  # Exclude YOLO model files
+    "edinburgh_road_analysis/",  # Exclude demo output
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings  
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "N",   # pep8-naming
+    "S",   # flake8-bandit (security)
+    "T20", # flake8-print (no print statements)
+    "RET", # flake8-return
+    "SIM", # flake8-simplify
+]
+
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "S101",  # assert statements (OK in tests)
+    "T201",  # print statements (OK in demo/test files)
+    "S603",  # subprocess calls (we need these)
+    "S607",  # partial executable paths
+    "N806",  # variable name should be lowercase (for numpy/cv2 conventions)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Allow print statements in demo and test files
+"demo_*.py" = ["T201"]
+"test_*.py" = ["T201", "S101"]
+"tests/**/*.py" = ["T201", "S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+force-single-line = false
+lines-after-imports = 2
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends"]
+
+[tool.ruff.lint.pep8-naming]
+# Allow single letter variables in specific contexts
+extend-ignore-names = ["i", "j", "k", "x", "y", "z", "lat", "lon"]

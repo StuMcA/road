@@ -1,6 +1,8 @@
-import cv2
 import sys
 from pathlib import Path
+
+import cv2
+
 
 # Add config to path
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -20,8 +22,8 @@ def is_exposed_poorly(image, config: QualityConfig):
     hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
     hist = hist / hist.sum()  # normalize
 
-    dark_frac = hist[:config.dark_pixel_value].sum()
-    bright_frac = hist[config.bright_pixel_value:].sum()
+    dark_frac = hist[: config.dark_pixel_value].sum()
+    bright_frac = hist[config.bright_pixel_value :].sum()
 
     too_dark = dark_frac > config.dark_threshold
     too_bright = bright_frac > config.bright_threshold
@@ -34,11 +36,12 @@ def is_too_small(image, config: QualityConfig):
     h, w = image.shape[:2]
     return w < config.min_width or h < config.min_height, (w, h)
 
+
 def check_image_quality(image_path, config: QualityConfig = None):
     """Run all Stage 1 checks and return results."""
     if config is None:
         config = QualityConfig()
-        
+
     image = cv2.imread(image_path)
     if image is None:
         raise ValueError(f"Cannot load image: {image_path}")
