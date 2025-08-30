@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .mapillary_client import MapillaryClient
-from ..utils.coord_utils import bbox_from_point
+from src.utils.coord_utils import bbox_from_point
 
 
 class ImageFetcherService:
